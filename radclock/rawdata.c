@@ -234,6 +234,46 @@ spy_loop(struct radclock_handle *handle)
 }
 
 
+void
+fill_rawdata_1588(u_char *c_handle, const struct pcap_pkthdr *pcap_hdr,
+		const u_char *packet_data)
+{
+	struct radclock_handle *handle;
+	struct raw_data_bundle *rdb;
+	int err;
+
+	JDEBUG
+
+	handle = (struct radclock_handle *) c_handle;
+
+	/* Initialise raw data bundle */
+	rdb = (struct raw_data_bundle *) malloc(sizeof(struct raw_data_bundle));
+	JDEBUG_MEMORY(JDBG_MALLOC, rdb);
+	assert(rdb);
+
+	RD_PKT(rdb)->buf = (void *) malloc(pcap_hdr->caplen * sizeof(char));
+	JDEBUG_MEMORY(JDBG_MALLOC, RD_PKT(rdb)->buf);
+	assert(RD_PKT(rdb)->buf);
+
+	/* Copy data of interest into the raw data bundle */
+	RD_PKT(rdb)->vcount = 0;
+
+	// TODO: should process the error code correctly
+	err = extract_vcount_stamp(handle->clock, handle->clock->pcap_handle,
+			pcap_hdr, packet_data, &(RD_PKT(rdb)->vcount));
+
+	memcpy(&(RD_PKT(rdb)->pcap_hdr), pcap_hdr, sizeof(struct pcap_pkthdr));
+	memcpy(RD_PKT(rdb)->buf, packet_data, pcap_hdr->caplen * sizeof(char));
+
+	rdb->next = NULL;
+	rdb->read = 0;
+	rdb->type = RD_TYPE_1588;
+
+	/* Insert the new bundle in the linked list */
+	insert_rdb_in_list(handle->pcap_queue, rdb);
+}
+
+
 int
 capture_raw_data(struct radclock_handle *handle)
 {
@@ -252,7 +292,6 @@ capture_raw_data(struct radclock_handle *handle)
 
 		case SYNCTYPE_PIGGY:
 		case SYNCTYPE_NTP:
-		case SYNCTYPE_1588:
 			/* Call pcap_loop() with number of packet =-1 so that it
 			 * actually never returns until error or explicit break.
 			 * pcap_loop will block until receiving packets to process.
@@ -262,6 +301,11 @@ capture_raw_data(struct radclock_handle *handle)
 			 */
 			err = pcap_loop(handle->clock->pcap_handle, -1 /*packet*/,
 					fill_rawdata_ntp, (u_char *) handle);
+			break;
+
+		case SYNCTYPE_1588:
+			err = pcap_loop(handle->clock->pcap_handle, -1 /*packet*/,
+					fill_rawdata_1588, (u_char *) handle);
 			break;
 
 		case SYNCTYPE_PPS:
@@ -428,8 +472,8 @@ deliver_rawdata_pcap(struct radclock_handle *handle, struct radpcap_packet_t *pk
 	if (rdb == NULL)
 		return (1);
 
-	if (rdb->type != RD_TYPE_NTP) {
-		verbose(LOG_ERR, "!! Asked to deliver NTP packet from rawdata but "
+	if ((rdb->type != RD_TYPE_NTP) && (rdb->type != RD_TYPE_1588)) {
+		verbose(LOG_ERR, "Asked to deliver pcap packet from rawdata but "
 				"parsing other type !!");
 		return (1);
 	}
