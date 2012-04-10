@@ -252,6 +252,7 @@ capture_raw_data(struct radclock_handle *handle)
 
 		case SYNCTYPE_PIGGY:
 		case SYNCTYPE_NTP:
+		case SYNCTYPE_1588:
 			/* Call pcap_loop() with number of packet =-1 so that it
 			 * actually never returns until error or explicit break.
 			 * pcap_loop will block until receiving packets to process.
@@ -264,7 +265,6 @@ capture_raw_data(struct radclock_handle *handle)
 			break;
 
 		case SYNCTYPE_PPS:
-		case SYNCTYPE_1588:
 			verbose(LOG_ERR, "IMPLEMENT ME!!");
 			err = -1;
 			break;
