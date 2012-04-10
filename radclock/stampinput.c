@@ -124,11 +124,11 @@ create_source(struct radclock_handle *handle)
 
 			case SYNCTYPE_NTP:
 			case SYNCTYPE_PIGGY:
+			case SYNCTYPE_1588:
 				INPUT_OPS(src) = &livepcap_source;
 				break;
 
 			case SYNCTYPE_PPS:
-			case SYNCTYPE_1588:
 			default:
 				verbose(LOG_ERR, "Source for this sync' type does not exist.");
 				return NULL;

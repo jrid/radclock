@@ -77,7 +77,9 @@ int ntp_client(struct radclock_handle *handle);
  * second.
  */
 int
-dummy_client() { JDEBUG
+dummy_client() {
+
+	JDEBUG
 
 	/* 500 ms */
 	usleep(500000);
@@ -238,6 +240,7 @@ trigger_init(struct radclock_handle *handle)
 		switch (handle->conf->synchro_type) {
 		case SYNCTYPE_SPY:
 		case SYNCTYPE_PIGGY:
+		case SYNCTYPE_1588:
 			/* Nothing to do */
 			break;
 
@@ -245,7 +248,6 @@ trigger_init(struct radclock_handle *handle)
 			err = ntp_client_init(handle);
 			break;
 
-		case SYNCTYPE_1588:
 		case SYNCTYPE_PPS:
 		default:
 			verbose(LOG_ERR, "Init Trigger type not implemented");
