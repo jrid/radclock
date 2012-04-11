@@ -35,6 +35,7 @@ noinst_HEADERS = \
 		ntohll.h \
 		pthread_mgr.h \
 		proto_ntp.h \
+		proto_1588.h \
 		rawdata.h \
 		stampinput.h \
 		sync_algo.h \
