@@ -1,0 +1,327 @@
+diff -ur a/Makefile b/Makefile
+--- a/Makefile	2012-01-26 11:39:32.000000000 +1100
++++ b/Makefile	2012-05-22 12:09:52.409751721 +1000
+@@ -1,7 +1,7 @@
+ VERSION = 3
+ PATCHLEVEL = 2
+ SUBLEVEL = 2
+-EXTRAVERSION =
++EXTRAVERSION = -hwstamp-cumulative-cmsg
+ NAME = Saber-toothed Squirrel
+ 
+ # *DOCUMENTATION*
+diff -ur a/arch/x86/include/asm/vgtod.h b/arch/x86/include/asm/vgtod.h
+--- a/arch/x86/include/asm/vgtod.h	2012-05-22 12:10:31.816197338 +1000
++++ b/arch/x86/include/asm/vgtod.h	2012-05-22 12:09:52.410187432 +1000
+@@ -11,6 +11,10 @@
+ 	time_t		wall_time_sec;
+ 	u32		wall_time_nsec;
+ 
++#ifdef CONFIG_RADCLOCK /* For timekeeper support */
++    int   sysctl_enabled;
++#endif
++
+ 	struct timezone sys_tz;
+ 	struct { /* extract of a clocksource struct */
+ 		int vclock_mode;
+diff -ur a/drivers/net/ethernet/intel/igb/igb_main.c b/drivers/net/ethernet/intel/igb/igb_main.c
+--- a/drivers/net/ethernet/intel/igb/igb_main.c	2012-01-26 11:39:32.000000000 +1100
++++ b/drivers/net/ethernet/intel/igb/igb_main.c	2012-05-22 12:18:04.443349568 +1000
+@@ -266,6 +266,79 @@
+ 	{}
+ };
+ 
++#ifdef CONFIG_RADCLOCK
++/*
++ * read_vcounter - Return the value of the regval into a cumulative counter
++ */
++#if 0
++static vcounter_t counter2cumul(struct timecounter *tc, u64 regval)
++{
++	volatile u64 delta = (regval - tc->vcounter_source_record) & tc->cc->mask;
++	tc->vcounter_source_record = regval; /* XXX TESTING */
++    printk(KERN_INFO "SHIT: c2cv2 %llu %llu\n",delta, tc->vcounter_record+delta);
++	return tc->vcounter_record + delta;
++}
++#endif
++
++/* Our 40 bits mask */
++//static const u64 cumul_mask = 0x3FFFFFFFFF; 
++static const u64 cumul_mask = 0xFFFFFFFF; 
++
++static vcounter_t counter2cumul(struct timecounter *tc, u64 regval)
++{
++	s64 delta;
++	u64 udelta;
++	u64 result;
++	u64 last;
++	/* XXX Quick hack to detect when the cumulative counter is not initialized properly */
++	if (tc->vcounter_source_record > (cumul_mask << 2)) {
++		tc->vcounter_record = tc->cc->read(tc->cc) >> 24;
++		tc->vcounter_source_record = tc->vcounter_record;
++	}
++	regval = ((u64)regval & (u64)cumul_mask);
++	//volatile u64 delta = (regval - tc->vcounter_source_record) & cumul_mask;
++	last = tc->vcounter_source_record;
++	delta = (s64)((u64)regval - ((u64)tc->vcounter_source_record & (u64)cumul_mask));
++	result = (u64)((u64)tc->vcounter_record + (s64)delta);
++//	if (regval > tc->vcounter_source_record) {
++//	}
++//	else {
++//		delta = cumul_mask - tc->vcounter_source_record + regval;
++//		printk(KERN_INFO "SHIT: We ROLLED OVER - %llu %llu %llu\n", regval, delta, tc->vcounter_source_record);
++//	}
++//	volatile u64 delta = (regval - tc->vcounter_source_record);
++	tc->vcounter_source_record = (tc->cc->read(tc->cc) >> 24) & cumul_mask;
++	udelta = (tc->vcounter_source_record - last) & cumul_mask;
++	tc->vcounter_record = tc->vcounter_record + udelta;
++    //printk(KERN_INFO "SHIT: c2cv2 %llu %llu %lld %llu\n", regval, tc->vcounter_source_record, delta, tc->vcounter_record);
++	return (u64)result;
++}
++
++static void update_vcounter(struct timecounter *tc)
++{
++    /* XXX TESTING */
++    return;
++
++	vcounter_t last = tc->vcounter_source_record;
++	u64 delta;
++
++	/* Shift 24 bits to remove the SYSTIMR (residual) bits */
++	tc->vcounter_source_record = tc->cc->read(tc->cc) >> 24;
++
++	if (tc->vcounter_source_record >= last)
++		delta =  (tc->vcounter_source_record - last) & tc->cc->mask;
++	else /* Else: We rolled over */
++    {
++		delta = 0x10000000000LL - last + tc->vcounter_source_record;
++    }
++
++    printk(KERN_INFO "SHIT: source record: %llu delta %llu\n",
++           tc->vcounter_source_record, delta);
++
++	tc->vcounter_record += delta;
++}
++#endif /* CONFIG_RADCLOCK */
++
+ /*
+  * igb_regdump - register printout routine
+  */
+@@ -5685,6 +5758,14 @@
+ 	regval |= (u64)rd32(E1000_TXSTMPH) << 32;
+ 
+ 	igb_systim_to_hwtstamp(adapter, &shhwtstamps, regval);
++
++#ifdef CONFIG_RADCLOCK
++	shhwtstamps.cumustamp = counter2cumul(&adapter->clock, regval);
++	update_vcounter(&adapter->clock);
++#endif
++    //printk(KERN_INFO "SHIT: TX cumulative counter %llu\n",
++           //shhwtstamps.cumustamp);
++
+ 	skb_tstamp_tx(buffer_info->skb, &shhwtstamps);
+ }
+ 
+@@ -5940,6 +6021,15 @@
+ 	}
+ 
+ 	igb_systim_to_hwtstamp(adapter, skb_hwtstamps(skb), regval);
++
++#ifdef CONFIG_RADCLOCK
++	skb->vcount_stamp = counter2cumul(&adapter->clock, regval);
++	skb->tstamp_fair = skb_hwtstamps(skb)->syststamp;
++	update_vcounter(&adapter->clock);
++    
++    //printk(KERN_INFO "SHIT: RX cumulative counter %llu\n",
++      //     skb->vcount_stamp);
++#endif
+ }
+ 
+ static void igb_rx_vlan(struct igb_ring *ring,
+@@ -6419,6 +6509,18 @@
+ 		-EFAULT : 0;
+ }
+ 
++
++#ifdef CONFIG_RADCLOCK
++static int igb_get_rawcounter_ioctl(struct net_device *netdev,
++                                    struct ifreq *ifr)
++{
++	struct igb_adapter *adapter = netdev_priv(netdev);
++	cycle_t cycles = igb_read_clock(&adapter->cycles);
++	return copy_to_user(ifr->ifr_data, &cycles, sizeof(cycles)) ? -EFAULT:0;
++}
++#endif
++
++
+ /**
+  * igb_ioctl -
+  * @netdev:
+@@ -6434,6 +6536,10 @@
+ 		return igb_mii_ioctl(netdev, ifr, cmd);
+ 	case SIOCSHWTSTAMP:
+ 		return igb_hwtstamp_ioctl(netdev, ifr, cmd);
++#ifdef CONFIG_RADCLOCK
++	case SIOCDEVPRIVATE:
++		return igb_get_rawcounter_ioctl(netdev, ifr);
++#endif
+ 	default:
+ 		return -EOPNOTSUPP;
+ 	}
+diff -ur a/include/linux/clocksource.h b/include/linux/clocksource.h
+--- a/include/linux/clocksource.h	2012-05-22 12:10:10.244326396 +1000
++++ b/include/linux/clocksource.h	2012-05-22 12:09:52.442136221 +1000
+@@ -71,6 +71,11 @@
+ 	const struct cyclecounter *cc;
+ 	cycle_t cycle_last;
+ 	u64 nsec;
++
++#ifdef CONFIG_RADCLOCK /* Support for hw-based cumulative counters */ 
++	vcounter_t vcounter_record;
++	vcounter_t vcounter_source_record;
++#endif
+ };
+ 
+ /**
+diff -ur a/include/linux/skbuff.h b/include/linux/skbuff.h
+--- a/include/linux/skbuff.h	2012-05-22 12:10:15.774319344 +1000
++++ b/include/linux/skbuff.h	2012-05-22 12:09:52.443167851 +1000
+@@ -204,6 +204,10 @@
+ struct skb_shared_hwtstamps {
+ 	ktime_t	hwtstamp;
+ 	ktime_t	syststamp;
++
++#ifdef CONFIG_RADCLOCK
++	vcounter_t cumustamp; /* Cumulative counter from HW to userland */
++#endif
+ };
+ 
+ /* Definitions for tx_flags in struct skb_shared_info */
+diff -ur a/kernel/time/clocksource.c b/kernel/time/clocksource.c
+--- a/kernel/time/clocksource.c	2012-05-22 12:10:10.245303613 +1000
++++ b/kernel/time/clocksource.c	2012-05-22 12:09:52.444078123 +1000
+@@ -38,6 +38,10 @@
+ 	tc->cc = cc;
+ 	tc->cycle_last = cc->read(cc);
+ 	tc->nsec = start_tstamp;
++#ifdef CONFIG_RADCLOCK /* Support hw-based cumulative counters */
++	tc->vcounter_record = tc->cycle_last;
++	tc->vcounter_source_record = tc->cycle_last;
++#endif
+ }
+ EXPORT_SYMBOL_GPL(timecounter_init);
+ 
+diff -ur a/net/core/dev.c b/net/core/dev.c
+--- a/net/core/dev.c	2012-05-22 12:10:24.285228830 +1000
++++ b/net/core/dev.c	2012-05-22 12:09:52.446723795 +1000
+@@ -1454,6 +1454,23 @@
+ }
+ EXPORT_SYMBOL(call_netdevice_notifiers);
+ 
++#ifdef CONFIG_RADCLOCK
++/* Check to determine if the hardware is timestamping TX and/or RX packets.  
++ * If it is NOT hardware stamping, populate the RADclock specific skb
++ * fields.
++ */
++static atomic_t radclock_hwtstamping = ATOMIC_INIT(0);
++static inline void __extract_raw_and_ktime(struct sk_buff *skb)
++{
++    if (!atomic_read(&radclock_hwtstamping)) {
++            rdtsc_barrier();
++            skb->tstamp_fair = ktime_get_real();
++            skb->vcount_stamp = read_vcounter();
++            rdtsc_barrier();
++    }
++}
++#endif
++
+ /* When > 0 there are consumers of rx skb time stamps */
+ static atomic_t netstamp_needed = ATOMIC_INIT(0);
+ 
+@@ -1508,6 +1525,16 @@
+ 		break;
+ 	}
+ 
++#ifdef CONFIG_RADCLOCK
++	if (tx_type == HWTSTAMP_TX_ON) {
++		atomic_set(&radclock_hwtstamping, 1);
++		printk(KERN_INFO "RADclock: HW timestamping detected\n");
++	} else if (tx_type == HWTSTAMP_TX_OFF) {
++		atomic_set(&radclock_hwtstamping, 0);
++		printk(KERN_INFO "RADclock: HW timestamping disabled\n");
++	}
++#endif
++
+ 	switch (rx_filter) {
+ 	case HWTSTAMP_FILTER_NONE:
+ 	case HWTSTAMP_FILTER_ALL:
+@@ -3028,25 +3055,13 @@
+ 	 * in RADCLOCK_TSMODE_FAIRCOMPARE mode or not. So we take another
+ 	 * timestamp we ensure to be 'fair'.
+ 	 */
+-	ktime_t tv_fair;
+-	vcounter_t vcount;
+-
+-	rdtsc_barrier(); /* Make sure GCC doesn't mess up the compare */
+-	vcount = read_vcounter();
+-	tv_fair = ktime_get_real();
+-	rdtsc_barrier(); /* Make sure GCC doesn't mess up the compare */
++        __extract_raw_and_ktime(skb);
+ #endif
+ 
+ 	/* if netpoll wants it, pretend we never saw it */
+ 	if (netpoll_rx(skb))
+ 		return NET_RX_DROP;
+ 
+-#ifdef CONFIG_RADCLOCK
+-	/* Copy the two specific RADclock timestamps to the skbuff */
+-	skb->vcount_stamp = vcount;
+-	skb->tstamp_fair  = tv_fair;
+-#endif
+-
+ 	if (netdev_tstamp_prequeue)
+ 		net_timestamp_check(skb);
+ 
+@@ -3418,24 +3433,12 @@
+ 	 * in RADCLOCK_TSMODE_FAIRCOMPARE mode or not. So we take another
+ 	 * timestamp we ensure to be 'fair'.
+ 	 */
+-	ktime_t tv_fair;
+-	vcounter_t vcount;
+-
+-	rdtsc_barrier(); /* Make sure GCC doesn't mess up the compare */
+-	vcount = read_vcounter();
+-	tv_fair = ktime_get_real();
+-	rdtsc_barrier(); /* Make sure GCC doesn't mess up the compare */
++        __extract_raw_and_ktime(skb);
+ #endif
+ 
+ 	if (netdev_tstamp_prequeue)
+ 		net_timestamp_check(skb);
+ 
+-#ifdef CONFIG_RADCLOCK
+-	/* Copy the two specific RADclock timestamps to the skbuff */
+-	skb->vcount_stamp = vcount;
+-	skb->tstamp_fair = tv_fair;
+-#endif
+-
+ 	if (skb_defer_rx_timestamp(skb))
+ 		return NET_RX_SUCCESS;
+ 
+diff -ur a/net/socket.c b/net/socket.c
+--- a/net/socket.c	2012-05-22 12:10:13.043917093 +1000
++++ b/net/socket.c	2012-05-22 12:09:52.448209492 +1000
+@@ -671,6 +671,13 @@
+ 	if (!empty)
+ 		put_cmsg(msg, SOL_SOCKET,
+ 			 SCM_TIMESTAMPING, sizeof(ts), &ts);
++
++#ifdef CONFIG_RADCLOCK
++	if (shhwtstamps) { /* Need to update test for only HW stammping enabled */
++		__u64 data[2] = {0xBEEFCAFE, shhwtstamps->cumustamp};
++		put_cmsg(msg, SOL_SOCKET, 666, sizeof(data), data);
++	}
++#endif
+ }
+ EXPORT_SYMBOL_GPL(__sock_recv_timestamp);
+ 
