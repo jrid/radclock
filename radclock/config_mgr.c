@@ -27,9 +27,9 @@
 
 #include <arpa/inet.h>
 
-#include <stdio.h> 
-#include <stdlib.h> 
-#include <string.h> 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <syslog.h>
 #include <sys/stat.h>
 
@@ -47,18 +47,17 @@
 
 
 
-/* The configuration file lines follow the template : 
+/*
+ * The configuration file lines follow the template :
  * key = value
  */
 
 
-/** Basic structure definition containing label and corresponding index */
+/* Basic structure definition containing label and corresponding index */
 struct _key {
 	const char *label;
 	int keytype;
 };
-
-
 
 /* Definition of the keys used in the conf file */
 static struct _key keys[] = {
@@ -85,6 +84,7 @@ static struct _key keys[] = {
 	{ "hostname",				CONFIG_HOSTNAME},
 	{ "time_server",			CONFIG_TIME_SERVER},
 	{ "network_device",			CONFIG_NETWORKDEV},
+	{ "nic_hw_timestamp",		CONFIG_HW_TSTAMP},
 	{ "sync_input_pcap",		CONFIG_SYNC_IN_PCAP},
 	{ "sync_input_ascii",		CONFIG_SYNC_IN_ASCII},
 	{ "sync_output_pcap",		CONFIG_SYNC_OUT_PCAP},
@@ -105,9 +105,9 @@ static char* labels_sync[] = { "spy", "piggy", "ntp", "ieee1588", "pps",
 
 
 
-/** Modes for the quality of the temperature environment 
- * Must be defined in the same sequence order as the CONFIG_QUALITY_* 
- * values 
+/** Modes for the quality of the temperature environment
+ * Must be defined in the same sequence order as the CONFIG_QUALITY_*
+ * values
  */
 static struct _key temp_quality[] = {
 	{ "poor", 				CONFIG_QUALITY_POOR},
@@ -138,7 +138,7 @@ config_init(struct radclock_config *conf)
 	conf->synchro_type			= DEFAULT_SYNCHRO_TYPE;
 	conf->server_ntp			= DEFAULT_SERVER_NTP;
 	conf->adjust_sysclock		= DEFAULT_ADJUST_SYSCLOCK;
-	
+
 	/* Virtual Machine */
 	conf->server_vm_udp 		= DEFAULT_SERVER_VM_UDP;
 	conf->server_xen 			= DEFAULT_SERVER_XEN;
@@ -159,14 +159,15 @@ config_init(struct radclock_config *conf)
 	/* Network level */
 	strcpy(conf->hostname, "");
 	strcpy(conf->time_server, "");
-        conf->ntp_upstream_port = DEFAULT_NTP_PORT;
-        conf->ntp_downstream_port = DEFAULT_NTP_PORT;
+	conf->ntp_upstream_port = DEFAULT_NTP_PORT;
+	conf->ntp_downstream_port = DEFAULT_NTP_PORT;
 
 	/*
 	 * Input/Output files and devices. Must set to empty string to not confuse
 	 * anything. Only one option can be specified at a time (either from the
 	 * conf file or the command line.
 	 */
+	conf->hw_tstamp = DEFAULT_HW_TSTAMP;
 	strcpy(conf->network_device, "");
 	strcpy(conf->sync_in_pcap, "");
 	strcpy(conf->sync_in_ascii, "");
@@ -179,24 +180,26 @@ config_init(struct radclock_config *conf)
 
 
 /** For a given key index, lookup for the corresponding label */
-const char* find_key_label(struct _key *keys, int codekey) 
+const char *
+find_key_label(struct _key *keys, int codekey)
 {
-	for (;;) {	
+	for (;;) {
 		if (keys->keytype == CONFIG_UNKNOWN) {
 			verbose(LOG_ERR, "Did not find a key while creating the "
 					"configuration file.");
-			return NULL;
+			return (NULL);
 		}
 		if (keys->keytype == codekey) {
 			return keys->label;
 		}
-		keys++;	
+		keys++;
 	}
-	return NULL;
+	return (NULL);
 }
 
 
-int get_temperature_config(struct radclock_config *conf)
+int
+get_temperature_config(struct radclock_config *conf)
 {
 	if ( (conf->phyparam.TSLIMIT == TS_LIMIT_POOR)
 	  && (conf->phyparam.RateErrBOUND == RATE_ERR_BOUND_POOR)
@@ -204,7 +207,7 @@ int get_temperature_config(struct radclock_config *conf)
 	  && (conf->phyparam.BestSKMrate == BEST_SKM_RATE_POOR)
 	  && (conf->phyparam.offset_ratio == OFFSET_RATIO_POOR)
 	  && (conf->phyparam.plocal_quality == PLOCAL_QUALITY_POOR))
-			return CONFIG_QUALITY_POOR;
+			return (CONFIG_QUALITY_POOR);
 
 	else if ( (conf->phyparam.TSLIMIT == TS_LIMIT_GOOD)
 	  && (conf->phyparam.RateErrBOUND == RATE_ERR_BOUND_GOOD)
@@ -212,7 +215,7 @@ int get_temperature_config(struct radclock_config *conf)
 	  && (conf->phyparam.BestSKMrate == BEST_SKM_RATE_GOOD)
 	  && (conf->phyparam.offset_ratio == OFFSET_RATIO_GOOD)
 	  && (conf->phyparam.plocal_quality == PLOCAL_QUALITY_GOOD))
-			return CONFIG_QUALITY_GOOD;
+			return (CONFIG_QUALITY_GOOD);
 
 	else if ( (conf->phyparam.TSLIMIT == TS_LIMIT_EXCEL)
 	  && (conf->phyparam.RateErrBOUND == RATE_ERR_BOUND_EXCEL)
@@ -220,10 +223,10 @@ int get_temperature_config(struct radclock_config *conf)
 	  && (conf->phyparam.BestSKMrate == BEST_SKM_RATE_EXCEL)
 	  && (conf->phyparam.offset_ratio == OFFSET_RATIO_EXCEL)
 	  && (conf->phyparam.plocal_quality == PLOCAL_QUALITY_EXCEL))
-			return CONFIG_QUALITY_EXCEL;
+			return (CONFIG_QUALITY_EXCEL);
 
-	else	
-			return CONFIG_QUALITY_UNKWN;
+	else
+		return (CONFIG_QUALITY_UNKWN);
 }
 
 
@@ -331,7 +334,7 @@ write_config_file(FILE *fd, struct _key *keys, struct radclock_config *conf)
 				labels_bool[conf->server_ipc]);
 
 	/* *
-	 * Virtual Machine Servers 
+	 * Virtual Machine Servers
 	 * */
 	fprintf(fd, "# VM UDP server.\n");
 	fprintf(fd, "# Serves clock data to radclock clients over the network.\n");
@@ -423,23 +426,23 @@ write_config_file(FILE *fd, struct _key *keys, struct radclock_config *conf)
 		fprintf(fd, "%s = %s\n\n", find_key_label(keys, CONFIG_TEMPQUALITY ), temp_quality[CONFIG_QUALITY_GOOD].label);
 	else {
 		/* There is an existing configuration file */
-		switch (get_temperature_config(conf)) { 
+		switch (get_temperature_config(conf)) {
 		case CONFIG_QUALITY_POOR:
-			fprintf(fd, "%s = %s\n\n", find_key_label(keys, CONFIG_TEMPQUALITY ), 
+			fprintf(fd, "%s = %s\n\n", find_key_label(keys, CONFIG_TEMPQUALITY ),
 					temp_quality[CONFIG_QUALITY_POOR].label);
 			break;
 		case CONFIG_QUALITY_GOOD:
-			fprintf(fd, "%s = %s\n\n", find_key_label(keys, CONFIG_TEMPQUALITY ), 
+			fprintf(fd, "%s = %s\n\n", find_key_label(keys, CONFIG_TEMPQUALITY ),
 					temp_quality[CONFIG_QUALITY_GOOD].label);
 			break;
 		case CONFIG_QUALITY_EXCEL:
-			fprintf(fd, "%s = %s\n\n", find_key_label(keys, CONFIG_TEMPQUALITY ), 
+			fprintf(fd, "%s = %s\n\n", find_key_label(keys, CONFIG_TEMPQUALITY ),
 					temp_quality[CONFIG_QUALITY_EXCEL].label);
 			break;
 		/* We have an existing expert config */
 		case CONFIG_QUALITY_UNKWN:
 		default:
-		fprintf(fd, "#%s = %s\n\n", find_key_label(keys, CONFIG_TEMPQUALITY ), 
+		fprintf(fd, "#%s = %s\n\n", find_key_label(keys, CONFIG_TEMPQUALITY ),
 				temp_quality[CONFIG_QUALITY_GOOD].label);
 		}
 	}
@@ -455,9 +458,9 @@ write_config_file(FILE *fd, struct _key *keys, struct radclock_config *conf)
 		fprintf(fd, "#%s = %.9lf\n", find_key_label(keys, CONFIG_BEST_SKM_RATE), BEST_SKM_RATE_GOOD);
 		fprintf(fd, "#%s = %d\n", find_key_label(keys, CONFIG_OFFSET_RATIO), OFFSET_RATIO_GOOD);
 		fprintf(fd, "#%s = %.9lf\n", find_key_label(keys, CONFIG_PLOCAL_QUALITY), PLOCAL_QUALITY_GOOD);
-		fprintf(fd, "\n"); 
+		fprintf(fd, "\n");
 	} else {
-		switch (get_temperature_config(conf)) { 
+		switch (get_temperature_config(conf)) {
 		case CONFIG_QUALITY_POOR:
 		case CONFIG_QUALITY_GOOD:
 		case CONFIG_QUALITY_EXCEL:
@@ -467,7 +470,7 @@ write_config_file(FILE *fd, struct _key *keys, struct radclock_config *conf)
 			fprintf(fd, "#%s = %.9lf\n", find_key_label(keys, CONFIG_BEST_SKM_RATE), BEST_SKM_RATE_GOOD);
 			fprintf(fd, "#%s = %d\n", find_key_label(keys, CONFIG_OFFSET_RATIO), OFFSET_RATIO_GOOD);
 			fprintf(fd, "#%s = %.9lf\n", find_key_label(keys, CONFIG_PLOCAL_QUALITY), PLOCAL_QUALITY_GOOD);
-			fprintf(fd, "\n"); 
+			fprintf(fd, "\n");
 			break;
 		/* We have an existing expert config */
 		case CONFIG_QUALITY_UNKWN:
@@ -478,7 +481,7 @@ write_config_file(FILE *fd, struct _key *keys, struct radclock_config *conf)
 			fprintf(fd, "%s = %.9lf\n", find_key_label(keys, CONFIG_BEST_SKM_RATE), conf->phyparam.BestSKMrate);
 			fprintf(fd, "%s = %d\n", find_key_label(keys, CONFIG_OFFSET_RATIO), conf->phyparam.offset_ratio);
 			fprintf(fd, "%s = %.9lf\n", find_key_label(keys, CONFIG_PLOCAL_QUALITY), conf->phyparam.plocal_quality);
-			fprintf(fd, "\n"); 
+			fprintf(fd, "\n");
 		}
 	}
 
@@ -512,7 +515,7 @@ write_config_file(FILE *fd, struct _key *keys, struct radclock_config *conf)
 	fprintf(fd, "# Input / Output parameters\n");
 	fprintf(fd, "#----------------------------------------------------------------------------#\n");
 	fprintf(fd, "\n");
-	
+
 	/* Network device */
 	fprintf(fd, "# Network interface.\n");
 	fprintf(fd, "# Specify a different interface (xl0, eth0, ...)\n");
@@ -522,6 +525,16 @@ write_config_file(FILE *fd, struct _key *keys, struct radclock_config *conf)
 	else
 		fprintf(fd, "#%s = %s\n\n", find_key_label(keys, CONFIG_NETWORKDEV), DEFAULT_NETWORKDEV);
 
+	/* NIC hardware timestamping */
+	fprintf(fd, "# Network interface hardware timestamping.\n");
+	fprintf(fd, "# Specify if the network interface has hardware timestamping "
+			"capability and if RADclock should use hardware packet timestamps.\n");
+	if (conf == NULL)
+		fprintf(fd, "%s = %s\n\n", find_key_label(keys, CONFIG_HW_TSTAMP),
+				labels_bool[DEFAULT_HW_TSTAMP]);
+	else
+		fprintf(fd, "%s = %s\n\n", find_key_label(keys, CONFIG_HW_TSTAMP),
+				labels_bool[conf->hw_tstamp]);
 
 	/* RAW Input */
 	fprintf(fd, "# Synchronisation data input file (modified pcap format).\n");
@@ -564,19 +577,19 @@ write_config_file(FILE *fd, struct _key *keys, struct radclock_config *conf)
 
 
 /** Extract the key label and the corresponding value from a line of the parsed
- * configuration file. 
+ * configuration file.
  */
 int extract_key_value (char* c, char* key, char* value) {
 
 	char *ch;
-	
+
 	// Look for first character in line
 	while ((*c==' ') || (*c=='\t')) { c++; }
 
 	// Check if character for a config parameter
-	if ((*c=='#') || (*c=='\n') || (*c=='\0')) { return 0; }
-	
-	// Identify the separator, copy key and clean end white spaces 
+	if ((*c=='#') || (*c=='\n') || (*c=='\0')) { return (0); }
+
+	// Identify the separator, copy key and clean end white spaces
 	strncpy(key, c, strchr(c,'=')-c);
 	ch = key;
 	while ((*ch!=' ') && (*ch!='\n') && (*ch != '\t')) { ch++; }
@@ -587,11 +600,11 @@ int extract_key_value (char* c, char* key, char* value) {
 	ch = c;
 	while ((*ch=='=') || (*ch==' ') || (*ch=='\t')) { ch++; }
 	c = ch;
-	
-	// Remove possible comments in line after the value '#' 
+
+	// Remove possible comments in line after the value '#'
 	while ((*ch!='\0') && (*ch!='#')) {ch++;}
 		*ch = '\0';
-	
+
 	// Remove extra space at the end of the line if any
 	ch = c + strlen(c) - 1 ;
 	while ((*ch==' ') || (*ch=='\t') || (*ch=='\n')) { ch--; }
@@ -600,7 +613,7 @@ int extract_key_value (char* c, char* key, char* value) {
 	// Copy final string
 	strncpy(value, c, strlen(c)+1);
 
-	return 1;
+	return (1);
 }
 
 
@@ -608,28 +621,28 @@ int extract_key_value (char* c, char* key, char* value) {
 
 /** Match the key index from the key label */
 int match_key(struct _key *keys, char* keylabel) {
-	for (;;) {	
+	for (;;) {
 		if (keys->keytype == CONFIG_UNKNOWN) {
 			verbose(LOG_WARNING, "Unknown key in config file: %s", keylabel);
-			return 0;
+			return (0);
 		}
-		if (strcmp(keys->label, keylabel) == 0) 
-			return keys->keytype;
-		keys++;	
+		if (strcmp(keys->label, keylabel) == 0)
+			return (keys->keytype);
+		keys++;
 	}
-	return 1;
+	return (1);
 }
 
 
-int check_valid_option(char* value, char* labels[], int label_sz) 
+int check_valid_option(char* value, char* labels[], int label_sz)
 {
 	int i;
 	for ( i=0; i<label_sz; i++ )
 	{
 		if ( strcmp(value, labels[i]) == 0 )
-			return i;
+			return (i);
 	}
-	return -1;
+	return (-1);
 }
 
 
@@ -640,8 +653,10 @@ int check_valid_option(char* value, char* labels[], int label_sz)
 int have_all_tmpqual = 0; /* To know if we run expert mode */
 
 /** Update global data with values retrieved from the configuration file */
-int update_data (struct radclock_config *conf, u_int32_t *mask, int codekey, char *value) { 
-
+int
+update_data (struct radclock_config *conf, uint32_t *mask, int codekey,
+		char *value)
+{
 	// The mask parameter should always be positioned to UPDMASK_NOUPD except
 	// for the first call to config_parse() after parsing the command line
 	// arguments
@@ -650,22 +665,22 @@ int update_data (struct radclock_config *conf, u_int32_t *mask, int codekey, cha
 	double dval 	= 0.0;
 	int iqual 		= 0;
 	struct _key *quality = temp_quality;
-	
+
 	// Additionnal input checks: codekey and value
 	if ( codekey < 0) {
 		verbose(LOG_ERR, "Negative key value from the config file");
-		return 0;
+		return (0);
 	}
 
 	if (value == NULL || strlen(value)==0) {
 		verbose(LOG_ERR, "Empty value from the config file");
-		return 0;
+		return (0);
 	}
 
 
 
 switch (codekey) {
-	
+
 	case CONFIG_RADCLOCK_VERSION:
 		strcpy(conf->radclock_version, value);
 		break;
@@ -673,7 +688,7 @@ switch (codekey) {
 
 	case CONFIG_VERBOSE:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_VERBOSE) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_VERBOSE) )
 			break;
 		ival = check_valid_option(value, labels_verb, 3);
 		// Indicate changed value
@@ -691,7 +706,7 @@ switch (codekey) {
 
 	case CONFIG_SERVER_IPC:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_SERVER_IPC) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_SERVER_IPC) )
 			break;
 		ival = check_valid_option(value, labels_bool, 2);
 		// Indicate changed value
@@ -709,7 +724,7 @@ switch (codekey) {
 
 	case CONFIG_SYNCHRO_TYPE:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_SYNCHRO_TYPE) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_SYNCHRO_TYPE) )
 			break;
 		ival = check_valid_option(value, labels_sync, 8);
 		// Indicate changed value
@@ -726,7 +741,7 @@ switch (codekey) {
 
 	case CONFIG_SERVER_NTP:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_SERVER_NTP) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_SERVER_NTP) )
 			break;
 		ival = check_valid_option(value, labels_bool, 2);
 		// Indicate changed value
@@ -739,10 +754,10 @@ switch (codekey) {
 		else
 			conf->server_ntp = ival;
 		break;
-	
+
 	case CONFIG_SERVER_VM_UDP:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_SERVER_VM_UDP) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_SERVER_VM_UDP) )
 			break;
 		ival = check_valid_option(value, labels_bool, 2);
 		// Indicate changed value
@@ -758,7 +773,7 @@ switch (codekey) {
 
 	case CONFIG_SERVER_XEN:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_SERVER_XEN) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_SERVER_XEN) )
 			break;
 		ival = check_valid_option(value, labels_bool, 2);
 		// Indicate changed value
@@ -774,7 +789,7 @@ switch (codekey) {
 
 	case CONFIG_SERVER_VMWARE:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_SERVER_VMWARE) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_SERVER_VMWARE) )
 			break;
 		ival = check_valid_option(value, labels_bool, 2);
 		// Indicate changed value
@@ -792,7 +807,7 @@ switch (codekey) {
 
 	case CONFIG_ADJUST_SYSCLOCK:
 		// If value specified on the command line
-		if (HAS_UPDATE(*mask, UPDMASK_ADJUST_SYSCLOCK)) 
+		if (HAS_UPDATE(*mask, UPDMASK_ADJUST_SYSCLOCK))
 			break;
 		ival = check_valid_option(value, labels_bool, 2);
 		// Indicate changed value
@@ -816,7 +831,7 @@ switch (codekey) {
 		// Indicate changed value
 		if ( conf->poll_period != ival )
 			SET_UPDATE(*mask, UPDMASK_POLLPERIOD);
-		if ((ival<RAD_MINPOLL) || (ival>RAD_MAXPOLL)) {	
+		if ((ival<RAD_MINPOLL) || (ival>RAD_MAXPOLL)) {
 			verbose(LOG_WARNING, "Poll period value out of [%d,%d] range (%d). Fall back to default.",
 				   	ival, RAD_MINPOLL, RAD_MAXPOLL);
 			conf->poll_period = DEFAULT_NTP_POLL_PERIOD;
@@ -829,7 +844,7 @@ switch (codekey) {
 
 	case CONFIG_TSLIMIT:
 		/* Be sure we don't override an overall temperature setting */
-		if (have_all_tmpqual == 0) { 
+		if (have_all_tmpqual == 0) {
 			dval = strtod(value, NULL);
 			// Indicate changed value
 			if ( conf->phyparam.TSLIMIT != dval )
@@ -843,10 +858,10 @@ switch (codekey) {
 			}
 		}
 		break;
-		
+
 	case CONFIG_SKM_SCALE:
 		/* Be sure we don't override an overall temperature setting */
-		if (have_all_tmpqual == 0) { 
+		if (have_all_tmpqual == 0) {
 			dval = strtod(value, NULL);
 			// Indicate changed value
 			if ( conf->phyparam.SKM_SCALE != dval )
@@ -860,10 +875,10 @@ switch (codekey) {
 			}
 		}
 		break;
-		
+
 	case CONFIG_RATE_ERR_BOUND:
 		/* Be sure we don't override an overall temperature setting */
-		if (have_all_tmpqual == 0) { 
+		if (have_all_tmpqual == 0) {
 			dval = strtod(value, NULL);
 			// Indicate changed value
 			if ( conf->phyparam.RateErrBOUND != dval )
@@ -877,10 +892,10 @@ switch (codekey) {
 			}
 		}
 		break;
-	
+
 	case CONFIG_BEST_SKM_RATE:
 		/* Be sure we don't override an overall temperature setting */
-		if (have_all_tmpqual == 0) { 
+		if (have_all_tmpqual == 0) {
 			dval = strtod(value, NULL);
 			// Indicate changed value
 			if ( conf->phyparam.BestSKMrate != dval )
@@ -897,7 +912,7 @@ switch (codekey) {
 
 	case CONFIG_OFFSET_RATIO:
 		/* Be sure we don't override an overall temperature setting */
-		if (have_all_tmpqual == 0) { 
+		if (have_all_tmpqual == 0) {
 			ival = atoi(value);
 			// Indicate changed value
 			if ( conf->phyparam.offset_ratio != ival )
@@ -914,7 +929,7 @@ switch (codekey) {
 
 	case CONFIG_PLOCAL_QUALITY:
 		/* Be sure we don't override an overall temperature setting */
-		if (have_all_tmpqual == 0) { 
+		if (have_all_tmpqual == 0) {
 			dval = strtod(value, NULL);
 			// Indicate changed value
 			if ( conf->phyparam.plocal_quality != dval )
@@ -929,14 +944,14 @@ switch (codekey) {
 		}
 		break;
 
-	
+
 	case CONFIG_TEMPQUALITY:
 		/* We have an overall environment quality key word */
 		have_all_tmpqual = 1;
 		for (;;) {
 			if (quality->keytype == CONFIG_QUALITY_UNKWN) {
 				verbose(LOG_ERR, "The quality parameter given is unknown");
-				return 0;
+				return (0);
 			}
 			if (strcmp(quality->label, value) == 0) {
 				iqual = quality->keytype;
@@ -981,7 +996,7 @@ switch (codekey) {
 			default:
 				verbose(LOG_ERR, "Quality parameter given is unknown");
 				break;
-		}	
+		}
 		break;
 
 
@@ -999,7 +1014,7 @@ switch (codekey) {
 
 	case CONFIG_ASYM_HOST:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_ASYM_HOST) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_ASYM_HOST) )
 			break;
 		dval = strtod(value, NULL);
 		// Indicate changed value
@@ -1017,7 +1032,7 @@ switch (codekey) {
 
 	case CONFIG_ASYM_NET:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_ASYM_NET) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_ASYM_NET) )
 			break;
 		dval = strtod(value, NULL);
 		// Indicate changed value
@@ -1035,7 +1050,7 @@ switch (codekey) {
 
 	case CONFIG_HOSTNAME:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_HOSTNAME) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_HOSTNAME) )
 			break;
 		if ( strcmp(conf->hostname, value) != 0 )
 			SET_UPDATE(*mask, UPDMASK_HOSTNAME);
@@ -1045,7 +1060,7 @@ switch (codekey) {
 
 	case CONFIG_TIME_SERVER:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_TIME_SERVER) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_TIME_SERVER) )
 			break;
 		if ( strcmp(conf->time_server, value) != 0 )
 			SET_UPDATE(*mask, UPDMASK_TIME_SERVER);
@@ -1055,7 +1070,7 @@ switch (codekey) {
 
 	case CONFIG_NETWORKDEV:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_NETWORKDEV) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_NETWORKDEV) )
 			break;
 		if ( strcmp(conf->network_device, value) != 0 )
 			SET_UPDATE(*mask, UPDMASK_NETWORKDEV);
@@ -1063,9 +1078,26 @@ switch (codekey) {
 		break;
 
 
+	case CONFIG_HW_TSTAMP:
+		// If value specified on the command line
+		if (HAS_UPDATE(*mask, UPDMASK_HW_TSTAMP))
+			break;
+		ival = check_valid_option(value, labels_bool, 2);
+		// Indicate changed value
+		if (conf->hw_tstamp != ival)
+			SET_UPDATE(*mask, UPDMASK_HW_TSTAMP);
+		if (ival < 0) {
+			verbose(LOG_WARNING, "hw_tstamp value incorrect. Fall back to default.");
+			conf->hw_tstamp = DEFAULT_HW_TSTAMP;
+		}
+		else
+			conf->hw_tstamp = ival;
+		break;
+
+
 	case CONFIG_SYNC_IN_PCAP:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_SYNC_IN_PCAP) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_SYNC_IN_PCAP) )
 			break;
 		if ( strcmp(conf->sync_in_pcap, value) != 0 )
 			SET_UPDATE(*mask, UPDMASK_SYNC_IN_PCAP);
@@ -1075,7 +1107,7 @@ switch (codekey) {
 
 	case CONFIG_SYNC_IN_ASCII:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_SYNC_IN_ASCII) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_SYNC_IN_ASCII) )
 			break;
 		if ( strcmp(conf->sync_in_ascii, value) != 0 )
 			SET_UPDATE(*mask, UPDMASK_SYNC_IN_ASCII);
@@ -1085,7 +1117,7 @@ switch (codekey) {
 
 	case CONFIG_SYNC_OUT_PCAP:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_SYNC_OUT_PCAP) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_SYNC_OUT_PCAP) )
 			break;
 		if ( strcmp(conf->sync_out_pcap, value) != 0 )
 			SET_UPDATE(*mask, UPDMASK_SYNC_OUT_PCAP);
@@ -1095,7 +1127,7 @@ switch (codekey) {
 
 	case CONFIG_SYNC_OUT_ASCII:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_SYNC_OUT_ASCII) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_SYNC_OUT_ASCII) )
 			break;
 		if ( strcmp(conf->sync_out_ascii, value) != 0 )
 			SET_UPDATE(*mask, UPDMASK_SYNC_OUT_ASCII);
@@ -1105,7 +1137,7 @@ switch (codekey) {
 
 	case CONFIG_CLOCK_OUT_ASCII:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_CLOCK_OUT_ASCII) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_CLOCK_OUT_ASCII) )
 			break;
 		if ( strcmp(conf->clock_out_ascii, value) != 0 )
 			SET_UPDATE(*mask, UPDMASK_CLOCK_OUT_ASCII);
@@ -1115,7 +1147,7 @@ switch (codekey) {
 
 	case CONFIG_VM_UDP_LIST:
 		// If value specified on the command line
-		if ( HAS_UPDATE(*mask, UPDMASK_VM_UDP_LIST) ) 
+		if ( HAS_UPDATE(*mask, UPDMASK_VM_UDP_LIST) )
 			break;
 		if ( strcmp(conf->vm_udp_list, value) != 0 )
 			SET_UPDATE(*mask, UPDMASK_VM_UDP_LIST);
@@ -1126,17 +1158,18 @@ switch (codekey) {
 		verbose(LOG_WARNING, "Unknown CONFIG_* symbol.");
 		break;
 }
-return 1;
+return (1);
 }
 
 
 /*
  * Reads config file line by line, retrieve (key,value) and update global data
  */
-int config_parse(struct radclock_config *conf, u_int32_t *mask, int is_daemon) 
+int
+config_parse(struct radclock_config *conf, uint32_t *mask, int is_daemon)
 {
 	struct _key *pkey = keys;
-	int codekey=0;	
+	int codekey=0;
 	char *c;
 	char line[MAXLINE];
 	char key[MAXLINE];
@@ -1146,9 +1179,9 @@ int config_parse(struct radclock_config *conf, u_int32_t *mask, int is_daemon)
 	/* Check input */
 	if (conf == NULL) {
 		verbose(LOG_ERR, "Configuration structure is NULL.");
-		return 0;
+		return (0);
 	}
-	
+
 	/* Config and log files */
 	if (strlen(conf->conffile) == 0)
 	{
@@ -1179,19 +1212,19 @@ int config_parse(struct radclock_config *conf, u_int32_t *mask, int is_daemon)
 		if (!fd) {
 			verbose(LOG_ERR, "Cannot write configuration file: %s. ", conf->conffile);
                         umask(027);
-			return 0;
+			return (0);
 		}
 
 		write_config_file(fd, keys, NULL);
 		fclose(fd);
                 verbose(LOG_NOTICE, "Writing configuration file.");
-		
+
 		// Reposition umask
 		umask(027);
-		return 1;
+		return (1);
 	}
 	// The configuration file exist, parse it and update default values
-	have_all_tmpqual = 0; //ugly 
+	have_all_tmpqual = 0; //ugly
 	while ((c=fgets(line, MAXLINE, fd))!=NULL) {
 
 		// Start with a reset of the value to avoid mistakes
@@ -1200,7 +1233,7 @@ int config_parse(struct radclock_config *conf, u_int32_t *mask, int is_daemon)
 		// Extract key and values from the conf file
 		if ( !(extract_key_value(c, key, value) ))
 			continue;
-	
+
 		// Identify the key and update config values
 		codekey = match_key(pkey, key);
 
@@ -1209,12 +1242,12 @@ int config_parse(struct radclock_config *conf, u_int32_t *mask, int is_daemon)
 			continue;
 
 		// update in case we actually retrieved a value
-		// This is our basic output check 
+		// This is our basic output check
 		if ( strlen(value) > 0 )
 			update_data(conf, mask, codekey, value);
 	}
 	fclose(fd);
-	
+
 
 	/* Ok, the file has been parsed, but may the version may be outdated. Since
 	 * we just parsed the configuration, we can produce an up-to-date version
@@ -1228,7 +1261,7 @@ int config_parse(struct radclock_config *conf, u_int32_t *mask, int is_daemon)
 		{
 			verbose(LOG_ERR, "Cannot update configuration file: %s.", conf->conffile);
 			umask(027);
-			return 0;
+			return (0);
 		}
 		write_config_file(fd, keys, conf);
 		fclose(fd);
@@ -1240,7 +1273,7 @@ int config_parse(struct radclock_config *conf, u_int32_t *mask, int is_daemon)
 				    "to the current package version");
 	}
 
-	/* Check command line arguments and config file for exclusion. 
+	/* Check command line arguments and config file for exclusion.
 	 * - If running as a daemon, refuse to read input raw or ascii file
 	 */
 	if ( is_daemon ) {
@@ -1250,15 +1283,13 @@ int config_parse(struct radclock_config *conf, u_int32_t *mask, int is_daemon)
 		strcpy(conf->sync_in_ascii,"");
 		strcpy(conf->sync_in_pcap,"");
 	}
-	
-	return 1;
+
+	return (1);
 }
 
 
-
-
-
-void config_print(int level, struct radclock_config *conf)
+void
+config_print(int level, struct radclock_config *conf)
 {
 	verbose(level, "RADclock - configuration summary");
 	verbose(level, "radclock version     : %s", conf->radclock_version);
@@ -1287,6 +1318,7 @@ void config_print(int level, struct radclock_config *conf)
 	verbose(level, "Host name            : %s", conf->hostname);
 	verbose(level, "Time server          : %s", conf->time_server);
 	verbose(level, "Interface            : %s", conf->network_device);
+	verbose(level, "Hardware timestamp   : %s", labels_bool[conf->hw_tstamp]);
 	verbose(level, "pcap sync input      : %s", conf->sync_in_pcap);
 	verbose(level, "ascii sync input     : %s", conf->sync_in_ascii);
 	verbose(level, "pcap sync output     : %s", conf->sync_out_pcap);
