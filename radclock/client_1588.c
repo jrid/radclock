@@ -259,12 +259,12 @@ ieee1588_client_init(struct radclock_handle *handle)
  * <kernel_source>/Documentation/networking/timestamping/timestamp.c
  */
 static void
-get_errq_data(int sd)
+get_errq_data(int sd, char *clock_id)
 {
 	ssize_t bytes;
 	struct msghdr msg;
 	struct iovec iov;
-	struct cmsghdr *cmsg;
+	struct cmsghdr *cmsg, *cmsgts;
 	struct sockaddr_in addr;
 	struct timespec *stamp;
 	struct ptp_header *ptph;
@@ -291,44 +291,56 @@ get_errq_data(int sd)
 	/* Iterate across the aux/ancliarily data for the message from the errq */
 	for (cmsg=CMSG_FIRSTHDR(&msg); cmsg; cmsg=CMSG_NXTHDR(&msg, cmsg)) {
 		/*
-		 * This could be a SYNC, DELAY_REQ, PDELAY_REQ or PDELAY_RESP. Make sure
-		 * we have received enough bytes to parse the header.
-		 * TODO: do something with these packet?
+		 * This has to be a DELAY_REQ. Make sure we have received enough bytes
+		 * to parse the header, check a few fields to see if it is an IEEE 1588
+		 * message (version, type and clock_id since we sent it).
 		 */
 		if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_RECVERR) {
-			if (bytes < sizeof(struct ptp_header))
+			if (bytes < (sizeof(struct ptp_header) + sizeof(struct ptp_delayreq)))
 				continue;
 			ptph = (struct ptp_header *)CMSG_DATA(cmsg);
 
-			// TODO: Check if this is really a PTP packet, then message type
-			// then not truncated, then ...
+			if (PTP_MSG_TYPE(ptph->type_transp_flags) != 0x1 ||
+					PTP_VERSION(ptph->ver_reserved_flags) != 0x2 ||
+					memcmp(ptph->src_port, clock_id, 10) != 0) {
+				continue;
+			}
 		}
 
-		/* This is the series of timestamps set via setsockopt for
-		 * SO_TIMESTAMPING.  If you knew this without looking at timestamp.c in
-		 * the kernel docs <kernel>/Documentation/networking/timestamping/ then
-		 * you are full of crap!  If implementation changes ummm good luck
-		 * figuring out whats changed.  I poop on this.
+		/*
+		 * We found a delay request, the next cmsg header must give us access to
+		 * hardware timestamps. If not, disregard this cmsg. Is it possible the
+		 * model breaks (ie, changes in kernel implementation)? Possibly, so
+		 * this should break, good warning.
+		 * Following is the series of timestamps set via setsockopt for
+		 * SO_TIMESTAMPING. Logic is based on implementation in timestamp.c in
+		 * the kernel docs <kernel>/Documentation/networking/timestamping/.
+		 * If implementation changes, good luck figuring out whats changed.
 		 */
-		else if (cmsg->cmsg_level == SOL_SOCKET &&
-				cmsg->cmsg_type == SO_TIMESTAMPING) {
-			/* Software timestamp (should be all zeros as we didnt set it via
-			 * setsockopt
-			 */
-			stamp = (struct timespec *)CMSG_DATA(cmsg);
-			printf("[S] SW: %ld.%09ld\n", (long)stamp->tv_sec,
-					(long)stamp->tv_nsec);
+		cmsgts = CMSG_NXTHDR(&msg, cmsg);
+		if (cmsgts->cmsg_level != SOL_SOCKET ||
+				cmsgts->cmsg_type != SO_TIMESTAMPING)
+			continue;
 
-			/* The next timestamp is the hw counter converted to sys time */
-			++stamp;
-			printf("[S] HW Modified: %ld.%09ld\n", (long)stamp->tv_sec,
-					(long)stamp->tv_nsec);
+		/*
+		 * Software timestamp (should be all zeros as we didnt set it via
+		 * setsockopt)
+		 */
+		stamp = (struct timespec *)CMSG_DATA(cmsg);
+		printf("[S] SW: %ld.%09ld\n", (long)stamp->tv_sec,
+				(long)stamp->tv_nsec);
 
-			/* The third timestamp is the raw hardware counter value */
-			++stamp;
-			printf("[S] Raw: %ld.%09ld\n", (long)stamp->tv_sec,
-					(long)stamp->tv_nsec);
-		}
+		/* The next timestamp is the hw counter converted to sys time */
+		++stamp;
+		printf("[S] HW Modified: %ld.%09ld\n", (long)stamp->tv_sec,
+				(long)stamp->tv_nsec);
+
+		/* The third timestamp is the raw hardware counter value */
+		++stamp;
+		printf("[S] Raw: %ld.%09ld\n", (long)stamp->tv_sec,
+				(long)stamp->tv_nsec);
+
+		// Need to insert the packet in fake pcap queue
 	}
 }
 
@@ -374,7 +386,7 @@ ieee1588_client(struct radclock_handle *handle)
 
 	/* Check the sockets */
 	if (FD_ISSET(IEEE1588_CLIENT(handle)->socket, &fds))
-		get_errq_data(IEEE1588_CLIENT(handle)->socket);
+		get_errq_data(IEEE1588_CLIENT(handle)->socket, clock_id);
 
 	/* Wait and resend */
 		sleep(1);
@@ -382,8 +394,5 @@ ieee1588_client(struct radclock_handle *handle)
 
 	return (0);
 }
-
-
-
 
 #endif
