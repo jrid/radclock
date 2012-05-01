@@ -279,6 +279,60 @@ fill_rawdata_1588(u_char *c_handle, const struct pcap_pkthdr *pcap_hdr,
 
 
 /*
+ * Compute IP header checksum.
+ */
+uint16_t
+do_ip_checksum(uint16_t *buf, uint16_t len)
+{
+	uint32_t checksum;
+	int i;
+
+	/* Sum all 16bit words. Assume even len. */
+	checksum = 0;
+	for (i=0; i<len/2; i++)
+		checksum += (uint32_t) buf[i];
+
+	/* Add carries */
+	while (checksum >> 16)
+	  checksum = (checksum & 0xFFFF) + (checksum >> 16);
+
+	/* Return 1's complement checksum */
+	return ((uint16_t) ~checksum);
+}
+
+
+/*
+ * Compute UDP header checksum.
+ */
+uint16_t
+do_udp_checksum(uint16_t *src_addr, uint16_t *dst_addr, uint16_t *buf,
+		uint16_t len)
+{
+	uint32_t checksum;
+	int i;
+
+	/* Sum all 16bit words. Assume buf has extra byte at 0 if len not even. */
+	checksum = 0;
+	for (i=0; i<len/2; i++)
+		checksum += (uint32_t) buf[i];
+
+	/* Add pseudo header information */
+	checksum += src_addr[0] + src_addr[1];
+	checksum += dst_addr[0] + dst_addr[1];
+	checksum += 17;			/* Proto UDP */
+	checksum += len;
+
+	/* Add carries */
+	while (checksum >> 16)
+	  checksum = (checksum & 0xFFFF) + (checksum >> 16);
+
+	/* Return 1's complement checksum */
+	return ((uint16_t) ~checksum);
+}
+
+
+
+/*
  * Push packets read from socket error queue into raw data queue. Useful to
  * retrieve hardware timestamps on the sending side.
  */
@@ -297,9 +351,10 @@ fill_rawdata_1588eq(struct radclock_handle *handle, vcounter_t vcount,
 	linux_sll_header_t *sllh;
 	struct iphdr *iph;
 	struct udphdr *udph;
-	unsigned char *p;
+	unsigned char *pload;
 	int datalen;
 	int err;
+	uint16_t checksum;
 
 	JDEBUG
 
@@ -318,26 +373,39 @@ fill_rawdata_1588eq(struct radclock_handle *handle, vcounter_t vcount,
 	RD_PKT(rdb)->vcount = vcount;
 
 	/* Build completely fake PCAP header */
-	RD_PKT(rdb)->pcap_hdr.ts.tv_sec = ts.tv_sec;
-	RD_PKT(rdb)->pcap_hdr.ts.tv_usec = (long)(ts.tv_nsec / 1000);
+//	RD_PKT(rdb)->pcap_hdr.ts.tv_sec = ts.tv_sec;
+//	RD_PKT(rdb)->pcap_hdr.ts.tv_usec = (long)(ts.tv_nsec / 1000);
+	RD_PKT(rdb)->pcap_hdr.ts.tv_sec = 123456789;
+	RD_PKT(rdb)->pcap_hdr.ts.tv_usec = 1000;
 	RD_PKT(rdb)->pcap_hdr.len = datalen;
 	RD_PKT(rdb)->pcap_hdr.caplen = datalen;
 
 	/* Build entire packet data, SLL, IPv4, UDP */
-	sllh = (linux_sll_header_t *) RD_PKT(rdb)->buf;
-	iph  = (struct iphdr *)((uint8_t *)sllh + sizeof(linux_sll_header_t));
-	udph = (struct udphdr *)((uint8_t *)iph + sizeof(struct iphdr));
-	p    = (unsigned char *)((uint8_t *)udph + sizeof(struct udphdr));
+	sllh  = (linux_sll_header_t *) RD_PKT(rdb)->buf;
+	iph   = (struct iphdr *)((uint8_t *)sllh + sizeof(linux_sll_header_t));
+	udph  = (struct udphdr *)((uint8_t *)iph + sizeof(struct iphdr));
+	pload = (unsigned char *)((uint8_t *)udph + sizeof(struct udphdr));
+
+
+verbose(LOG_ERR, "pload-udph = %d, udph-iph= %d, iph-sllh= %d",
+		pload-(unsigned char *)udph,
+		(unsigned char *)udph - (unsigned char *)iph,
+		(unsigned char *)iph - (unsigned char *)sllh);
 
 	/* IEEE 1588 */
-	memcpy(p, ptp_msg, pktlen);
+	memcpy(pload, ptp_msg, pktlen);
+
+verbose(LOG_ERR, "pload = %x", *(uint32_t *)pload);
+verbose(LOG_ERR, "pload = %x", *(uint32_t *)ptp_msg);
+
+
 
 	/* UDP header */
 #if defined(__FreeBSD__) || defined (__APPLE__)
-	udph->uh_sport = htons(0);
+	udph->uh_sport = htons(319);
 	udph->uh_dport = htons (319);
 #else
-	udph->source = htons(0);
+	udph->source = htons(319);
 	udph->dest = htons (319);
 #endif
 	udph->check = 0;
@@ -354,13 +422,19 @@ fill_rawdata_1588eq(struct radclock_handle *handle, vcounter_t vcount,
 	iph->saddr = IEEE1588_CLIENT(handle)->s_from.sin_addr.s_addr;
 	iph->daddr = IEEE1588_CLIENT(handle)->s_to.sin_addr.s_addr;
 	iph->tot_len = htons(sizeof (struct iphdr) + sizeof(struct udphdr) + pktlen);
-	iph->check = 0;	// TODO: fix me
+	iph->check = 0;
+	checksum = do_ip_checksum((uint16_t *)iph, 20);
+//	iph->check = htons(checksum);
+	iph->check = checksum;
 
-	// TODO Recompute UDP checksum
+	/* Recompute UDP checksum */
+	checksum = do_udp_checksum((uint16_t *)&iph->saddr, (uint16_t *)&iph->daddr,
+			(uint16_t *)pload, sizeof(struct udphdr) + pktlen);
+	udph->check = checksum;
 
 	/* SLL */
 	sllh->pkttype = htons(3);	/* LINUX_SLL_OTHERHOST */
-	sllh->hatype  = htons(1);	/* ARPHRD_ETHER : 10/100 Mbps Ethernet */
+	sllh->hatype = htons(1);	/* ARPHRD_ETHER : 10/100 Mbps Ethernet */
 	sllh->protocol = htons(ETHERTYPE_IP);
 
 	/* Insert the new bundle in the linked list */
