@@ -172,16 +172,18 @@ ieee1588_client_init(struct radclock_handle *handle)
 	}
 
 	/* Enable HW timestamping */
-	memset(&hwtstamp, 0, sizeof(hwtstamp));
-	strncpy(hwtstamp.ifr_name, dev, sizeof(hwtstamp.ifr_name));
-	hwtstamp.ifr_data = (void *)&hwconfig;
-	memset(&hwconfig, 0, sizeof(hwconfig));
-	hwconfig.tx_type = HWTSTAMP_TX_ON;
-	hwconfig.rx_filter = HWTSTAMP_FILTER_ALL;
-	err = ioctl(sd, SIOCSHWTSTAMP, &hwtstamp);
-	if (err == -1) {
-		verbose(LOG_ERR, "ioctl: hwtstamp");
-		return (1);
+	if (handle->conf->hw_tstamp) {
+		memset(&hwtstamp, 0, sizeof(hwtstamp));
+		strncpy(hwtstamp.ifr_name, dev, sizeof(hwtstamp.ifr_name));
+		hwtstamp.ifr_data = (void *)&hwconfig;
+		memset(&hwconfig, 0, sizeof(hwconfig));
+		hwconfig.tx_type = HWTSTAMP_TX_ON;
+		hwconfig.rx_filter = HWTSTAMP_FILTER_ALL;
+		err = ioctl(sd, SIOCSHWTSTAMP, &hwtstamp);
+		if (err == -1) {
+			verbose(LOG_ERR, "ioctl: hwtstamp");
+			return (1);
+		}
 	}
 
 	/* Create the address data */
@@ -224,18 +226,22 @@ ieee1588_client_init(struct radclock_handle *handle)
 		return (1);
 	}
 
-	/* Set the socket timestamping flags for receiving both the raw hardware
+	/*
+	 * Set the socket timestamping flags for receiving both the raw hardware
 	 * timestamp and the hardware timestamp converted to system time.  We only
 	 * do this for packet TX.  This data is available via ancillary cmsg data.
 	 */
-	hwts_flag = SOF_TIMESTAMPING_TX_HARDWARE  |
-				SOF_TIMESTAMPING_SYS_HARDWARE |
-				SOF_TIMESTAMPING_RAW_HARDWARE;
+	if (handle->conf->hw_tstamp) {
+		hwts_flag = SOF_TIMESTAMPING_TX_HARDWARE  |
+					SOF_TIMESTAMPING_SYS_HARDWARE |
+					SOF_TIMESTAMPING_RAW_HARDWARE;
 
-	err = setsockopt(sd, SOL_SOCKET, SO_TIMESTAMPING, &hwts_flag, sizeof(hwts_flag));
-	if (err == -1) {
-		verbose(LOG_ERR, "setsockopt hwtstamp");
-		return (1);
+		err = setsockopt(sd, SOL_SOCKET, SO_TIMESTAMPING, &hwts_flag,
+				sizeof(hwts_flag));
+		if (err == -1) {
+			verbose(LOG_ERR, "setsockopt hwtstamp");
+			return (1);
+		}
 	}
 
 	/* Registre the socket in the radclock handle */

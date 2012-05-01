@@ -528,7 +528,8 @@ write_config_file(FILE *fd, struct _key *keys, struct radclock_config *conf)
 	/* NIC hardware timestamping */
 	fprintf(fd, "# Network interface hardware timestamping.\n");
 	fprintf(fd, "# Specify if the network interface has hardware timestamping "
-			"capability and if RADclock should use hardware packet timestamps.\n");
+			"capability \n# and if RADclock should use hardware packet "
+			"timestamps.\n");
 	if (conf == NULL)
 		fprintf(fd, "%s = %s\n\n", find_key_label(keys, CONFIG_HW_TSTAMP),
 				labels_bool[DEFAULT_HW_TSTAMP]);
