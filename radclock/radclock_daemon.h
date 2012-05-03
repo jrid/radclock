@@ -40,7 +40,7 @@
 
 
 
-// TODO : should provide methods for modify this? 
+// TODO : should provide methods for modify this?
 typedef enum {
 	RADCLOCK_SYNC_NOTSET,
 	RADCLOCK_SYNC_DEAD,
@@ -83,6 +83,7 @@ struct radclock_ieee1588_client {
 	int socket;
 	struct sockaddr_in s_to;
 	struct sockaddr_in s_from;
+	int seqid;
 };
 
 
@@ -140,10 +141,10 @@ struct radclock_handle {
 	/* Protocol related stuff on the client side (NTP, 1588, ...) */
 	struct radclock_ntp_client		*ntp_client;
 	struct radclock_ieee1588_client	*ieee1588_client;
-	
+
 	/* Protol related stuff (NTP, 1588, ...) */
 	struct radclock_ntp_server		*ntp_server;
-	
+
 	/* Raw data capture buffer for libpcap */
 //	struct raw_data_bundle *rdb_start;
 //	struct raw_data_bundle *rdb_end;
@@ -186,7 +187,7 @@ struct radclock_handle {
 	 * cast
 	 */
 	void *active_peer;
-	
+
 };
 
 

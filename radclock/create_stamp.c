@@ -1012,8 +1012,8 @@ push_stamp_1588(struct stamp_queue *q, radpcap_packet_t *packet,
 {
 	struct ptp_header *ptph;
 	struct stamp_t stamp;
-	uint64_t id;
-	uint64_t sec;
+	uint64_t clock_id;
+	uint64_t sec, nsec;
 	long double tstamp;
 	int ptp_msg_type;
 	char *p;
@@ -1026,11 +1026,21 @@ push_stamp_1588(struct stamp_queue *q, radpcap_packet_t *packet,
 	}
 
 	ptph = (struct ptp_header *)((char *)udph + sizeof(struct udphdr));
-	remaining -= PTP_HEADER_LEN;
+	ptp_msg_type = PTP_MSG_TYPE(ptph->type_transp_flags);
+
+	switch (ptp_msg_type) {
+	case PTP_DELAYREQ:
+	case PTP_DELAYRESP:
+		break;
+	case PTP_SYNC:
+	case PTP_FOLLOWUP:
+	default:
+		return (1);
+	}
 
 	/* Check message is not truncated either. */
 	// TODO deal with all packets types
-	ptp_msg_type = PTP_MSG_TYPE(ptph->type_transp_flags);
+	remaining -= PTP_HEADER_LEN;
 	if (ptp_msg_type == PTP_DELAYRESP)
 		remaining -= 20;
 	else
@@ -1041,26 +1051,22 @@ push_stamp_1588(struct stamp_queue *q, radpcap_packet_t *packet,
 		return (-1);
 	}
 
+verbose(LOG_ERR, "push stamp 1588 type %d", ptp_msg_type);
+
+
+
 	stamp.type = STAMP_1588;
 	stamp.msg_type = ptp_msg_type;
 	stamp.qual_warning = 0;
 
-	/*
-	 * Build the stamp ID. Extract 6 bytes of original MAC address (remove
-	 * central 0xfffe) and OR the seq id. This makes a 64bit ID.
-	 */
 	if (ptp_msg_type == PTP_DELAYRESP) {
 		p = (char *)ptph + PTP_HEADER_LEN + 10;
-		extract_clock_id(p, &id);
+		extract_clock_id(p, &clock_id);
 	}
 	else {
 		p = (char *)ptph->src_port;
-		extract_clock_id(p, &id);
+		extract_clock_id(p, &clock_id);
 	}
-	stamp.id = id;
-	id = ntohs(ptph->seq);
-	stamp.id = stamp.id | id;
-	stamp.rank = *vcount;
 
 	/* Extract remote timestamp */
 	p = (char *)ptph + PTP_HEADER_LEN;
@@ -1070,10 +1076,26 @@ push_stamp_1588(struct stamp_queue *q, radpcap_packet_t *packet,
 	sec = sec | ntohl(*(uint32_t *)p);
 	tstamp = sec;
 	p += 4;
-	sec = ntohl(*(uint32_t *)p);
-	tstamp = tstamp + sec / 1e9;
+	nsec = ntohl(*(uint32_t *)p);
+	tstamp = tstamp + nsec / 1e9;
 
-	/* Store stamps and id tracking */
+	/*
+	 * Build the stamp ID. Extract 6 bytes of original MAC address (remove
+	 * central 0xfffe) and OR the seq id. This makes a 64bit ID.
+	 */
+	stamp.id = sec;
+	sec = (sec >> 10) << 10;
+	stamp.id = sec << 16;
+	stamp.id |= ((uint64_t)ptph->domain_num) << 16 | ((uint64_t) ntohs(ptph->seq));
+	stamp.rank = *vcount;
+verbose(LOG_ERR, "stamp.id: %llu", stamp.id);
+
+// XXX at start up, radclock is out of whack. Unique ID cannot rely on timestamp
+// sent in the delay_req?
+//	stamp.id = ((uint64_t)ptph->domain_num) << 16 | ((uint64_t) ntohs(ptph->seq));
+
+
+	/* Store stamps and last clock id tracking */
 	if (ptp_msg_type == PTP_SYNC || ptp_msg_type == PTP_FOLLOWUP) {
 		UST(&stamp)->remote_stamp = tstamp;
 		UST(&stamp)->local_stamp = *vcount;
@@ -1086,14 +1108,14 @@ push_stamp_1588(struct stamp_queue *q, radpcap_packet_t *packet,
 	// piggy backing on another 1588 daemon. Otherwise, problem goes away.
 	else if (ptp_msg_type == PTP_DELAYREQ) {
 		BST(&stamp)->Ta = *vcount;
-		if (lastid != stamp.id >> 16)
-			lastid = stamp.id >> 16;
+		if (lastid != clock_id)
+			lastid = clock_id;
 	}
 	// FIXME: This is the delay response and we are missing the Te timestamp
 	// that doesn't exist with 1588. Make a fake one 5 mus after the receive
 	else if (ptp_msg_type == PTP_DELAYRESP) {
 		/* Discard delay response intended to someone else */
-		if (stamp.id >> 16 != lastid)
+		if (clock_id != lastid)
 			return (0);
 		BST(&stamp)->Tb = tstamp;
 		BST(&stamp)->Te = tstamp + 5e-6;
@@ -1185,7 +1207,7 @@ get_stamp_from_queue(struct stamp_queue *q, struct stamp_t *stamp)
 	while (stq != NULL) {
 		st = &stq->stamp;
 		if (st->msg_type == PTP_SYNC || st->msg_type == PTP_FOLLOWUP) {
-			verbose(VERB_DEBUG, "Ignoring SYNC or FOLLOWUP packet");
+//			verbose(VERB_DEBUG, "Ignoring SYNC or FOLLOWUP packet");
 		}
 		else if ((BST(st)->Ta != 0) && (BST(st)->Tf != 0)) {
 			memcpy(stamp, st, sizeof(struct stamp_t));
