@@ -76,26 +76,58 @@ int ieee1588_client(struct radclock_handle *handle) { return(1); }
 static void
 pack_ptpstamp(uint8_t *p, struct ptp_stamp *stamp)
 {
-	uint32_t lsec;
+	uint32_t *nsec;
+	uint32_t *sec_low;
+	uint16_t *sec_high;
 
-	lsec = stamp->sec & 0xFFFFFFFF;
-	*p = htons((uint16_t)(stamp->sec >> 32));
-	*(p + 2) = htonl((uint32_t)(lsec));
-	*(p + 6) = htonl((uint32_t)(stamp->nsec));
+	sec_high = (uint16_t *)p;
+	sec_low = (uint32_t *)(p + 2);
+	nsec = (uint32_t *)(p + 6);
+	*sec_high = htons((uint16_t)(stamp->sec >> 32));
+	*sec_low = htonl((uint32_t)(stamp->sec & 0xFFFFFFFF));
+	*nsec = htonl((uint32_t)(stamp->nsec));
 }
 
 
 static void
 unpack_ptpstamp(uint8_t *p, struct ptp_stamp *stamp)
 {
-	uint64_t sec;
+	uint32_t *nsec;
+	uint32_t *sec_low;
+	uint16_t *sec_high;
 
-	sec = ntohs(*(uint16_t *)p);
-	sec = sec << 32;
-	stamp->sec = ntohl(*(uint32_t *)(p + 2));
-	stamp->sec |= sec;
-	stamp->nsec = ntohl(*(uint32_t *)(p + 6));
+	sec_high = (uint16_t *)p;
+	sec_low = (uint32_t *)(p + 2);
+	nsec = (uint32_t *)(p + 6);
+	stamp->sec = ntohs(*sec_high);
+	stamp->sec = stamp->sec << 32 | ntohl(*sec_low);
+	stamp->nsec = ntohl(*nsec);
 }
+
+
+
+// TODO: Get rid of me when things start working
+void
+print_bytes(uint8_t *start, size_t len)
+{
+	uint8_t *buf;
+	uint8_t *p;
+	int i;
+	int plen;
+
+	// Round things up to the next 8 bytes
+	plen = (len / 8 + 1) * 8;
+
+	buf = (uint8_t *) calloc(plen, 1);
+	memcpy(buf, start, len);
+
+	p = buf;
+	for (i=0; i<plen; i+=8)
+	verbose(LOG_ERR, "p[%2d] = %02x %02x %02x %02x %02x %02x %02x %02x", i,
+			p[i+0], p[i+1], p[i+2], p[i+3],
+			p[i+4], p[i+5], p[i+6], p[i+7]);
+}
+
 
 
 static int
@@ -104,9 +136,11 @@ create_delay_req(struct radclock_handle *handle, uint8_t *buf, size_t *bytes,
 {
 	struct ptp_header *hdr;
 	struct ptp_delayreq *req;
-	vcounter_t vcount;
-	long double time;
-	struct ptp_stamp stamp;
+//	vcounter_t vcount;
+//	long double time;
+	struct timespec ts;
+	struct ptp_stamp stamp, stamp2;
+	int i;
 
 	*bytes = sizeof(struct ptp_header) + sizeof(struct ptp_delayreq);
 
@@ -116,18 +150,37 @@ create_delay_req(struct radclock_handle *handle, uint8_t *buf, size_t *bytes,
 	hdr->type_transp_flags  |= PTP_MSG_TYPE(0x1);
 	hdr->ver_reserved_flags |= PTP_VERSION(0x2);
 	hdr->length = ntohs(44);
-	memcpy(hdr->src_port, clock_id, 10);
+
+	for (i=0; i<8; i++) {
+		*(hdr->src_port + i) = 0xAA;
+	}
+	*(hdr->src_port + 8) = 0;
+	*(hdr->src_port + 9) = 1;
 
 	hdr->seq = ntohs((uint16_t)seq);
 	hdr->control = 1;
 
-	/* Put the delay request in */
+	/*
+	 * If we are running with hardware timestamps enable, then the platform
+	 * counter is meaningless since clock estimates track NIC XO.
+	 * For the time being, get time from system clock.
+	 */
+//	radclock_get_vcounter(verbose_data.handle->clock, &vcount);
+//	counter_to_time(&handle->rad_data, &vcount, &time);
+//	stamp.sec = (uint64_t)time;
+//	stamp.nsec = (uint32_t)(1e9 * (time - (uint64_t)time));
+
+	clock_gettime(CLOCK_REALTIME, &ts);
+	stamp.sec = (uint64_t)ts.tv_sec;
+	stamp.nsec = (uint32_t)ts.tv_nsec;
+
+	/* Pack the timestamp in the delay request */
 	req = (struct ptp_delayreq *) (buf + PTP_HEADER_LEN);
-	radclock_get_vcounter(verbose_data.handle->clock, &vcount);
-	counter_to_time(&handle->rad_data, &vcount, &time);
-	stamp.sec = (uint64_t)time;
-	stamp.nsec = (uint32_t)(1e9 * (time - (uint64_t)time));
 	pack_ptpstamp((uint8_t *)&req->stamp, &stamp);
+	unpack_ptpstamp((uint8_t *)&req->stamp, &stamp2);
+
+verbose(LOG_ERR, "delay request %d has stamp: %ld.09%ld", seq, stamp.sec, stamp.nsec);
+verbose(LOG_ERR, "delay request %d has stamp: %ld.09%ld", seq, stamp2.sec, stamp2.nsec);
 
 	return (0);
 }
@@ -247,6 +300,11 @@ ieee1588_client_init(struct radclock_handle *handle)
 	/* Registre the socket in the radclock handle */
 	IEEE1588_CLIENT(handle)->socket = sd;
 	IEEE1588_CLIENT(handle)->s_to = addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(319);
+	addr.sin_addr.s_addr = imr.imr_interface.s_addr;
+	IEEE1588_CLIENT(handle)->s_from = addr;
+	IEEE1588_CLIENT(handle)->seqid = 0;
 
 	return (0);
 }
@@ -362,12 +420,18 @@ ieee1588_client(struct radclock_handle *handle)
 	size_t bytes;
 	fd_set fds;
 	int err;
-	char *clock_id = "ADEADBEEFS";
-	int seq = 666;
+	uint8_t clock_id[10];
 	struct timeval tv;
 
+	JDEBUG
+
 	/* Create a message to send */
-	err = create_delay_req(handle, buf, &bytes, seq, (uint8_t *)clock_id);
+	memset(buf, 0, 54);
+	IEEE1588_CLIENT(handle)->seqid++;
+	if (IEEE1588_CLIENT(handle)->seqid >= 1LU << 16)
+		IEEE1588_CLIENT(handle)->seqid = 0;
+	err = create_delay_req(handle, buf, &bytes, IEEE1588_CLIENT(handle)->seqid,
+			clock_id);
 	if (err) {
 		verbose(LOG_ERR, "Failed creating 1588 delay request");
 		return (1);
@@ -381,6 +445,9 @@ ieee1588_client(struct radclock_handle *handle)
 		verbose(LOG_ERR, "Sending DelayRequest message");
 		return (1);
 	}
+verbose(LOG_ERR, "");
+verbose(LOG_ERR, "Sending DelayRequest message:");
+//print_bytes(buf, 54);
 
 	/* Receive data */
 	FD_ZERO(&fds);
