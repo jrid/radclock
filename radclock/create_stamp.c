@@ -1005,7 +1005,7 @@ extract_clock_id(char *p, uint64_t *clock_id, uint16_t *port_id)
 int
 push_stamp_1588(struct stamp_queue *q, uint64_t myclockid, radpcap_packet_t *packet,
 		struct udphdr *udph, int remaining, vcounter_t *vcount,
-		struct timeref_stats *stats)
+		struct timeref_stats *stats, uint64_t *last_update)
 {
 	struct ptp_header *ptph;
 	struct stamp_t stamp;
@@ -1026,6 +1026,7 @@ push_stamp_1588(struct stamp_queue *q, uint64_t myclockid, radpcap_packet_t *pac
 	ptph = (struct ptp_header *)((char *)udph + sizeof(struct udphdr));
 	ptp_msg_type = PTP_MSG_TYPE(ptph->type_transp_flags);
 
+	// XXX Should let UST stamp in again, once things are working
 	switch (ptp_msg_type) {
 	case PTP_DELAYREQ:
 	case PTP_DELAYRESP:
@@ -1078,6 +1079,11 @@ verbose(LOG_ERR, "clock_id= %x myclock_id = %x", (uint32_t)clock_id, (uint32_t)m
 	p += 4;
 	nsec = ntohl(*(uint32_t *)p);
 	tstamp = tstamp + nsec / 1e9;
+
+	/* Record last stamp received */
+	// XXX should do some locking with delay request creation
+	*last_update = sec;
+
 
 	/*
 	 * Build the stamp ID. Extract 6 bytes of original MAC address (remove
@@ -1137,7 +1143,8 @@ verbose(LOG_ERR, "stamp.id: %llu", stamp.id);
  */
 int
 update_stamp_queue(struct stamp_queue *q, uint64_t ieee1588_clockid,
-		radpcap_packet_t *packet, struct timeref_stats *stats)
+		radpcap_packet_t *packet, struct timeref_stats *stats,
+		uint64_t *last_update)
 {
 	struct udphdr *udph;
 	struct sockaddr_storage ss_src, ss_dst;
@@ -1168,7 +1175,7 @@ update_stamp_queue(struct stamp_queue *q, uint64_t ieee1588_clockid,
 
 	case STAMP_1588:
 		err = push_stamp_1588(q, ieee1588_clockid, packet, udph, remaining,
-				&vcount, stats);
+				&vcount, stats, last_update);
 		break;
 
 	default:
@@ -1316,7 +1323,8 @@ get_network_stamp(struct radclock_handle *handle, void *userdata,
 		 */
 		//err = update_stamp_queue(peer->q, packet, stats);
 		// FIXME: 1588 CLOCK_ID trick ... super ugly
-		err = update_stamp_queue(peer->q, 0 /* FIXME */, packet, stats);
+		err = update_stamp_queue(peer->q, 0 /* FIXME */, packet, stats,
+				&(IEEE1588_CLIENT(handle)->last_update));
 		switch (err) {
 		case -1:
 			verbose(LOG_ERR, "Stamp queue error");
@@ -1356,7 +1364,7 @@ get_network_stamp(struct radclock_handle *handle, void *userdata,
 
 			/* Convert packet to stamp and push it to the stamp queue */
 			err = update_stamp_queue(peer->q, IEEE1588_CLIENT(handle)->clock_id,
-					packet, stats);
+					packet, stats, &(IEEE1588_CLIENT(handle)->last_update));
 
 			/* Low level / input problem worth stopping */
 			if (err == -1)
