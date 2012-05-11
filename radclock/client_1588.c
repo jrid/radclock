@@ -190,9 +190,17 @@ create_delay_req(struct radclock_handle *handle, uint8_t *buf, size_t *bytes,
 //	stamp.sec = (uint64_t)time;
 //	stamp.nsec = (uint32_t)(1e9 * (time - (uint64_t)time));
 
-	clock_gettime(CLOCK_REALTIME, &ts);
-	stamp.sec = (uint64_t)ts.tv_sec;
-	stamp.nsec = (uint32_t)ts.tv_nsec;
+	if (IEEE1588_CLIENT(handle)->last_update == 0) {
+		clock_gettime(CLOCK_REALTIME, &ts);
+		stamp.sec = (uint64_t)ts.tv_sec;
+		//stamp.nsec = (uint32_t)ts.tv_nsec;
+		stamp.nsec = 0;
+	}
+	else {
+		// XXX TODO: neeed locking of some kind in here
+		stamp.sec = IEEE1588_CLIENT(handle)->last_update;
+		stamp.nsec = 0;
+	}
 
 	/* Pack the timestamp in the delay request */
 	req = (struct ptp_delayreq *) (buf + PTP_HEADER_LEN);

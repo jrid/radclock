@@ -81,6 +81,7 @@ struct radclock_ntp_server {
  */
 struct radclock_ieee1588_client {
 	uint64_t clock_id;
+	uint64_t last_update;	/* Last stamp from server, seconds only*/
 	int socket;
 	struct sockaddr_in s_to;
 	struct sockaddr_in s_from;
