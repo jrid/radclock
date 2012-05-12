@@ -990,14 +990,14 @@ push_stamp_ntp(struct stamp_queue *q, radpcap_packet_t *packet,
  * central 0xfffe) and OR the seq id. This makes a 64bit ID.
  */
 static inline void
-extract_clock_id(char *p, uint64_t *clock_id, uint16_t *port_id)
+extract_clock_id(uint8_t *p, uint64_t *clock_id, uint16_t *port_id)
 {
 	uint64_t low, high;
 
 	low = ntohl(*(uint32_t *)(p));
 	high = ntohl(*(uint32_t *)(p + 4));
 	*clock_id = (high << 32) | low;
-	*port_id = ntohs((uint16_t *)(p + 8));
+	*port_id = ntohs(*(uint16_t *)(p + 8));
 }
 
 
@@ -1014,7 +1014,7 @@ push_stamp_1588(struct stamp_queue *q, uint64_t myclockid, radpcap_packet_t *pac
 	uint64_t sec, nsec;
 	long double tstamp;
 	int ptp_msg_type;
-	char *p;
+	uint8_t *p;
 
 	JDEBUG
 
@@ -1026,7 +1026,7 @@ push_stamp_1588(struct stamp_queue *q, uint64_t myclockid, radpcap_packet_t *pac
 	ptph = (struct ptp_header *)((char *)udph + sizeof(struct udphdr));
 	ptp_msg_type = PTP_MSG_TYPE(ptph->type_transp_flags);
 
-	// XXX Should let UST stamp in again, once things are working
+	// XXX TODO Should let UST stamp in again, once things are working
 	switch (ptp_msg_type) {
 	case PTP_DELAYREQ:
 	case PTP_DELAYRESP:
@@ -1034,6 +1034,7 @@ push_stamp_1588(struct stamp_queue *q, uint64_t myclockid, radpcap_packet_t *pac
 	case PTP_SYNC:
 	case PTP_FOLLOWUP:
 	default:
+		verbose(VERB_DEBUG, "Packet 1588 ignored because of wrong type %d", ptp_msg_type);
 		return (1);
 	}
 
@@ -1050,7 +1051,7 @@ push_stamp_1588(struct stamp_queue *q, uint64_t myclockid, radpcap_packet_t *pac
 		return (-1);
 	}
 
-verbose(LOG_ERR, "push stamp 1588 type %d", ptp_msg_type);
+verbose(VERB_DEBUG, "push stamp 1588 type %d", ptp_msg_type);
 
 
 
@@ -1059,18 +1060,16 @@ verbose(LOG_ERR, "push stamp 1588 type %d", ptp_msg_type);
 	stamp.qual_warning = 0;
 
 	if (ptp_msg_type == PTP_DELAYRESP) {
-		p = (char *)ptph + PTP_HEADER_LEN + 10;
-		extract_clock_id((uint8_t *)p, &clock_id, &port_id);
+		p = (uint8_t *)ptph + PTP_HEADER_LEN + 10;
+		extract_clock_id(p, &clock_id, &port_id);
 	}
 	else {
-		p = (char *)ptph->src_port;
-		extract_clock_id((uint8_t *)p, &clock_id, &port_id);
+		p = (uint8_t *)ptph->src_port;
+		extract_clock_id(p, &clock_id, &port_id);
 	}
 
-verbose(LOG_ERR, "clock_id= %x myclock_id = %x", (uint32_t)clock_id, (uint32_t)myclockid);
-
 	/* Extract remote timestamp */
-	p = (char *)ptph + PTP_HEADER_LEN;
+	p = (uint8_t *)ptph + PTP_HEADER_LEN;
 	sec = ntohs(*(uint16_t *)p);
 	sec = sec << 32;
 	p += 2;
@@ -1094,7 +1093,7 @@ verbose(LOG_ERR, "clock_id= %x myclock_id = %x", (uint32_t)clock_id, (uint32_t)m
 	stamp.id = sec << 16;
 	stamp.id |= ((uint64_t)ptph->domain_num) << 16 | ((uint64_t) ntohs(ptph->seq));
 	stamp.rank = *vcount;
-verbose(LOG_ERR, "stamp.id: %llu", stamp.id);
+verbose(VERB_DEBUG, "stamp.id: %llu with sec= %u  and seq=%u", stamp.id, sec, ntohs(ptph->seq));
 
 // XXX at start up, radclock is out of whack. Unique ID cannot rely on timestamp
 // sent in the delay_req?
@@ -1114,22 +1113,28 @@ verbose(LOG_ERR, "stamp.id: %llu", stamp.id);
 	// piggy backing on another 1588 daemon. Otherwise, problem goes away.
 	else if (ptp_msg_type == PTP_DELAYREQ) {
 		BST(&stamp)->Ta = *vcount;
-		if (clock_id != myclockid)
-			return (0);
+		if (clock_id != myclockid) {
+			verbose(VERB_DEBUG, "Ignoring DELAY_REQ with clock_id= %x (myclock_id = %x)",
+					(uint32_t)clock_id, (uint32_t)myclockid);
+			return (1);
+		}
 	}
 	// FIXME: This is the delay response and we are missing the Te timestamp
 	// that doesn't exist with 1588. Make a fake one 5 mus after the receive
 	else if (ptp_msg_type == PTP_DELAYRESP) {
 		/* Discard delay response intended to someone else */
-		if (clock_id != myclockid)
-			return (0);
+		if (clock_id != myclockid) {
+			verbose(VERB_DEBUG, "Ignoring DELAY_RESPONSE with clock_id= %x (myclock_id = %x)",
+					(uint32_t)clock_id, (uint32_t)myclockid);
+			return (1);
+		}
 		BST(&stamp)->Tb = tstamp;
 		BST(&stamp)->Te = tstamp + 5e-6;
 		BST(&stamp)->Tf = *vcount;
 	}
 	/* Any other 1588 message is discarded */
 	else {
-		return (0);
+		return (1);
 	}
 
 	return (insert_stamp_queue(q, &stamp));
@@ -1354,7 +1359,6 @@ get_network_stamp(struct radclock_handle *handle, void *userdata,
 					break;
 				} else {
 					usleep(attempt_wait);
-					//attempt_wait += attempt_wait;
 					continue;
 				}
 			}

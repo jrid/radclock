@@ -387,17 +387,13 @@ fill_rawdata_1588eq(struct radclock_handle *handle, vcounter_t vcount,
 	pload = (unsigned char *)((uint8_t *)udph + sizeof(struct udphdr));
 
 
-verbose(LOG_ERR, "pload-udph = %d, udph-iph= %d, iph-sllh= %d",
+verbose(VERB_DEBUG, "pload-udph = %d, udph-iph= %d, iph-sllh= %d",
 		pload-(unsigned char *)udph,
 		(unsigned char *)udph - (unsigned char *)iph,
 		(unsigned char *)iph - (unsigned char *)sllh);
 
 	/* IEEE 1588 */
 	memcpy(pload, ptp_msg, pktlen);
-
-verbose(LOG_ERR, "pload = %x", *(uint32_t *)pload);
-verbose(LOG_ERR, "pload = %x", *(uint32_t *)ptp_msg);
-
 
 
 	/* UDP header */

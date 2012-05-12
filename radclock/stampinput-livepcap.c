@@ -555,9 +555,12 @@ bpf_filter_ieee1588(struct radclock_handle *handle, struct radclock_config *conf
 	 * If we use hardware timestamps, we will capture sending side messages
 	 * from the UDP socket error queue.
 	 */
+// XXX TODO XXX add packet size filtering to exclude SYNC and FLOWUP 
+// DELAY_RESP have 42 + 54 bytes = 96
 	if (handle->conf->hw_tstamp)
 		strsize = snprintf(fltstr, maxsize, "src host %s and "
-			"dst host 224.0.1.129 and (dst port 319 or dst port 320)",
+			"dst host 224.0.1.129 and (dst port 319 or dst port 320)"
+			" and greater 96 and less 96",
 			ptp_master);
 	else
 		strsize = snprintf(fltstr, maxsize, "(src host %s or src host %s) "
