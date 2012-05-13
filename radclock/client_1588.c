@@ -249,19 +249,23 @@ ieee1588_client_init(struct radclock_handle *handle)
 		return (1);
 	}
 
-	/* Enable HW timestamping */
+	/* Enable HW timestamping if configured, force to disable it otherwise */
+	memset(&hwtstamp, 0, sizeof(hwtstamp));
+	strncpy(hwtstamp.ifr_name, dev, sizeof(hwtstamp.ifr_name));
+	hwtstamp.ifr_data = (void *)&hwconfig;
+	memset(&hwconfig, 0, sizeof(hwconfig));
 	if (handle->conf->hw_tstamp) {
-		memset(&hwtstamp, 0, sizeof(hwtstamp));
-		strncpy(hwtstamp.ifr_name, dev, sizeof(hwtstamp.ifr_name));
-		hwtstamp.ifr_data = (void *)&hwconfig;
-		memset(&hwconfig, 0, sizeof(hwconfig));
 		hwconfig.tx_type = HWTSTAMP_TX_ON;
 		hwconfig.rx_filter = HWTSTAMP_FILTER_ALL;
-		err = ioctl(sd, SIOCSHWTSTAMP, &hwtstamp);
-		if (err == -1) {
-			verbose(LOG_ERR, "ioctl: hwtstamp");
-			return (1);
-		}
+	} else {
+		hwconfig.tx_type = HWTSTAMP_TX_OFF;
+		hwconfig.rx_filter = HWTSTAMP_FILTER_NONE;
+	}
+	err = ioctl(sd, SIOCSHWTSTAMP, &hwtstamp);
+	if (err == -1) {
+		verbose(LOG_ERR, "ioctl: hwtstamp failed");
+//		return (1);
+//		XXX if the device does not support this ioctl, normal to fail?
 	}
 
 	/* Create the address data */
