@@ -257,6 +257,9 @@ ieee1588_client_init(struct radclock_handle *handle)
 		return (1);
 	}
 
+/* XXX Trying to make things work with radclock and ptpd together on FreeBSD.
+ * Socket binding nightmare.
+ */
 #ifdef WITH_RADKERNEL_LINUX
 	/* Allow binding to a socket already bound */
 	err = setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, (int []){1}, sizeof(int));
@@ -308,9 +311,7 @@ ieee1588_client_init(struct radclock_handle *handle)
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(319);
-//	addr.sin_addr.s_addr = htonl(INADDR_ANY);
-//	addr.sin_addr.s_addr = htonl(inet_addr("10.0.3.5"));
-	addr.sin_addr.s_addr = htonl(IEEE1588_CLIENT(handle)->s_from.sin_addr.s_addr);
+	addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
 	/* Bind */
 	err = bind(sd, (const struct sockaddr *)&addr, sizeof(addr));
