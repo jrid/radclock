@@ -1162,6 +1162,8 @@ main(int argc, char *argv[])
 	if (handle->run_mode == RADCLOCK_SYNC_DEAD) {
 
 // TODO : manage peers better !!
+		
+		IEEE1588_CLIENT(handle)->clock_id = 0xBEEFCAFE0BADF00D;
 
 		struct bidir_peer peer;
 		/* Some basic initialisation which is required */
