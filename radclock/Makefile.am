@@ -47,6 +47,7 @@ bin_PROGRAMS = radclock
 
 
 radclock_SOURCES = \
+		client_1588.c \
 		client_ntp.c \
 		create_stamp.c \
 		fixedpoint.c \
