@@ -546,7 +546,16 @@ bpf_filter_ieee1588(struct radclock_handle *handle, struct radclock_config *conf
 		return (-1);
 	}
 
-	strsize = snprintf(fltstr, maxsize, "(src host %s or src host %s) "
+	/*
+	 * If we use hardware timestamps, we will capture sending side messages
+	 * from the UDP socket error queue.
+	 */
+	if (handle->conf->hw_tstamp)
+		strsize = snprintf(fltstr, maxsize, "src host %s and "
+			"dst host 224.0.1.129 and (dst port 319 or dst port 320)",
+			ptp_master);
+	else
+		strsize = snprintf(fltstr, maxsize, "(src host %s or src host %s) "
 			"and dst host 224.0.1.129 and (dst port 319 or dst port 320)",
 			hostname, ptp_master);
 
