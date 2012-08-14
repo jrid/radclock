@@ -501,6 +501,10 @@ create_handle(struct radclock_config *conf, int is_daemon)
 	RAD_ERROR(handle)->error_bound_std 	= 0;
 	RAD_ERROR(handle)->min_RTT 			= 0;
 
+
+// TODO: we may not have to allocate all these members depending on network
+// config chosen (but may be ok if we have multiple peers running these
+// time protocols
 	/* NTP client data */
 	NTP_CLIENT(handle) = (struct radclock_ntp_client *)
 			malloc(sizeof(struct radclock_ntp_client));
@@ -519,6 +523,11 @@ create_handle(struct radclock_config *conf, int is_daemon)
 	/* Initialise with unspect stratum */
 	NTP_SERVER(handle)->stratum = STRATUM_UNSPEC;
 
+	/* IEEE 1588 client data */
+	IEEE1588_CLIENT(handle) = (struct radclock_ieee1588_client *)
+			malloc(sizeof(struct radclock_ieee1588_client));
+	JDEBUG_MEMORY(JDBG_MALLOC, IEEE1588_CLIENT(handle));
+	memset(IEEE1588_CLIENT(handle), 0, sizeof(struct radclock_ieee1588_client));
 
 	/* Raw data queues */
 	handle->pcap_queue = (void*) malloc(sizeof(struct raw_data_bundle));

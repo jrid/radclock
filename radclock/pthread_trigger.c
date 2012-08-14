@@ -71,6 +71,12 @@ pthread_cond_t alarm_cwait;
 int ntp_client_init(struct radclock_handle *handle);
 int ntp_client(struct radclock_handle *handle);
 
+/*
+ * IEEE 1588 client declarations.
+ */
+int ieee1588_client_init(struct radclock_handle *handle);
+int ieee1588_client(struct radclock_handle *handle);
+
 
 /*
  * This one does nothing except sleep and wake up the processing thread every
@@ -187,12 +193,15 @@ trigger_work(struct radclock_handle *handle)
 	case SYNCTYPE_SPY:
 	case SYNCTYPE_PIGGY:
 	case SYNCTYPE_PPS:
-	case SYNCTYPE_1588:
 		dummy_client();
 		break;
 
 	case SYNCTYPE_NTP:
 		ntp_client(handle);
+		break;
+
+	case SYNCTYPE_1588:
+		ieee1588_client(handle);
 		break;
 
 	default:
@@ -240,12 +249,15 @@ trigger_init(struct radclock_handle *handle)
 		switch (handle->conf->synchro_type) {
 		case SYNCTYPE_SPY:
 		case SYNCTYPE_PIGGY:
-		case SYNCTYPE_1588:
 			/* Nothing to do */
 			break;
 
 		case SYNCTYPE_NTP:
 			err = ntp_client_init(handle);
+			break;
+
+		case SYNCTYPE_1588:
+			err = ieee1588_client_init(handle);
 			break;
 
 		case SYNCTYPE_PPS:

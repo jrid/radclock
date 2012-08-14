@@ -76,6 +76,16 @@ struct radclock_ntp_server {
 };
 
 
+/*
+ * IEEE 1588 Protocol related stuff
+ */
+struct radclock_ieee1588_client {
+	int socket;
+	struct sockaddr_in s_to;
+	struct sockaddr_in s_from;
+};
+
+
 
 /*
  * Virtual machine environment data
@@ -129,6 +139,7 @@ struct radclock_handle {
 
 	/* Protocol related stuff on the client side (NTP, 1588, ...) */
 	struct radclock_ntp_client		*ntp_client;
+	struct radclock_ieee1588_client	*ieee1588_client;
 	
 	/* Protol related stuff (NTP, 1588, ...) */
 	struct radclock_ntp_server		*ntp_server;
@@ -181,6 +192,7 @@ struct radclock_handle {
 
 #define NTP_CLIENT(x) (x->ntp_client)
 #define NTP_SERVER(x) (x->ntp_server)
+#define IEEE1588_CLIENT(x) (x->ieee1588_client)
 #define RAD_DATA(x) (&(x->rad_data))
 #define RAD_ERROR(x) (&(x->rad_error))
 #define RAD_VM(x) (&(x->rad_vm))
