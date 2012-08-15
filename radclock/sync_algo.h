@@ -111,6 +111,7 @@ typedef enum {
 	STAMP_UNKNOWN,
 	STAMP_SPY,
 	STAMP_NTP,		/* Handed by libpcap */
+	STAMP_1588,
 	STAMP_PPS,
 } stamp_type_t;
 
