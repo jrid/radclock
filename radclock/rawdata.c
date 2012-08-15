@@ -627,8 +627,8 @@ deliver_rawdata_spy(struct radclock_handle *handle, struct stamp_t *stamp)
 // multiple sources, the chain list management is not re-entrant with multiple
 // sources!!
 int
-deliver_rawdata_pcap(struct radclock_handle *handle, struct radpcap_packet_t *pkt,
-		vcounter_t *vcount)
+deliver_rawdata_pcap(struct raw_data_queue *rq, int pcap_datalink,
+		struct radpcap_packet_t *pkt, vcounter_t *vcount)
 {
 	struct raw_data_bundle *rdb;
 
@@ -637,7 +637,7 @@ deliver_rawdata_pcap(struct radclock_handle *handle, struct radpcap_packet_t *pk
 	/* Do some clean up if needed and gives the current raw data bundle
 	 * to process.
 	 */
-	rdb = free_and_cherrypick(handle->pcap_queue);
+	rdb = free_and_cherrypick(rq);
 
 	/* Check we have something to do */
 	if (rdb == NULL)
@@ -661,7 +661,7 @@ deliver_rawdata_pcap(struct radclock_handle *handle, struct radpcap_packet_t *pk
 	pkt->header = pkt->buffer;
 	pkt->payload = pkt->buffer + sizeof(struct pcap_pkthdr);
 	pkt->size = RD_PKT(rdb)->pcap_hdr.caplen + sizeof(struct pcap_pkthdr);
-	pkt->type = pcap_datalink(handle->clock->pcap_handle);
+	pkt->type = pcap_datalink;
 
 	/* Fill the vcount */
 	*vcount = RD_PKT(rdb)->vcount;

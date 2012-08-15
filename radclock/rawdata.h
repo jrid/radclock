@@ -108,7 +108,7 @@ void fill_rawdata_1588eq(struct radclock_handle *handle, vcounter_t vcount,
 
 int capture_raw_data(struct radclock_handle *handle);
 
-int deliver_rawdata_ntp(struct radclock_handle *handle,
+int deliver_rawdata_pcap(struct raw_data_queue *rq, int pcap_datalink,
 		struct radpcap_packet_t *pkt, vcounter_t *vcount);
 
 int deliver_rawdata_spy(struct radclock_handle *handle, struct stamp_t *stamp);
