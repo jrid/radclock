@@ -105,9 +105,9 @@ insert_sll_header(radpcap_packet_t *packet)
 	JDEBUG
 
 	etherlen = 0;
-	
+
 	switch(packet->type) {
-	
+
 	/* BSD Loopback interface */
 	// TODO a bit ugly, but good enough for now on
 	case DLT_NULL:
@@ -191,18 +191,18 @@ insert_sll_header(radpcap_packet_t *packet)
 	pcaph = (struct pcap_pkthdr *)packet->header;
 	memcpy((char *)sllh + sizeof(linux_sll_header_t), (char *)eh + etherlen,
 			pcaph->caplen - etherlen);
-	
+
 	/* We made a copy so get rid of the former buffer */
 	JDEBUG_MEMORY(JDBG_FREE, packet->buffer);
 	free(packet->buffer);
-	
+
 	/* Reposition radpcap_packet fields to new values */
 	packet->buffer	= tmpbuffer;
 	packet->header	= tmpbuffer;
 	packet->payload = tmpbuffer + sizeof(struct pcap_pkthdr);
 	packet->type	= DLT_LINUX_SLL;
 	packet->size	= packet->size + sizeof(linux_sll_header_t) - etherlen;
-	
+
 	/* Update pcap header */
 	pcaph = (struct pcap_pkthdr *)packet->header;
 	pcaph->caplen = pcaph->caplen + sizeof(linux_sll_header_t) - etherlen;
@@ -221,7 +221,7 @@ set_vcount_in_sll(radpcap_packet_t *packet, vcounter_t vcount)
 	vcounter_t network_vcount;
 
 	JDEBUG
-	
+
 	/* Format the vcount to write */
 	network_vcount = htonll(vcount);
 	assert(sizeof(vcounter_t) == sizeof(char)*8);
@@ -265,10 +265,15 @@ get_packet_livepcap(struct radclock_handle *handle, void *userdata,
 	packet = *packet_p;
 
 	/* Retrieve the next packet from the raw data buffer */
-	err = deliver_rawdata_pcap(handle, packet, &vcount);
+	err = deliver_rawdata_pcap(handle->ieee1588eq_queue, DLT_LINUX_SLL, packet,
+			&vcount);
 	if (err) {
-		/* Raw data buffer is empty */
-		return (1);
+		err = deliver_rawdata_pcap(handle->pcap_queue,
+				pcap_datalink(handle->clock->pcap_handle), packet, &vcount);
+		if (err) {
+			/* Raw data buffer is empty */
+			return (1);
+		}
 	}
 
 	/* Replace the link layer header by the Linux SLL header for generic
@@ -329,7 +334,7 @@ get_interface(char* if_name, char* ip_addr)
 
 	found = 0;
 	addr = NULL;
-	
+
 	if (getifaddrs(&devs)) {
 		perror("Failed to get interfaces");
 		return (0);
@@ -341,7 +346,7 @@ get_interface(char* if_name, char* ip_addr)
 	 *   everything is fine
 	 * - Last do our best ...
 	 */
-	
+
 	/* An interface was specified */
 	if ((!found) && (strlen(if_name) > 0)) {
 		dev = devs;
@@ -502,7 +507,7 @@ bpf_filter_ntp(struct radclock_handle *handle, struct radclock_config *conf,
 	char *ntp_host;
 
 	ntp_host = conf->time_server;
-	
+
 	if (strlen(hostname) == 0) {
 		verbose(LOG_ERR, "No host info, no BPF filter");
 		return (-1);
@@ -587,7 +592,7 @@ open_live(struct radclock_handle *handle, struct livepcap_data *ldata)
 	 */
 	err = get_address_by_name(addr_name, conf->hostname);
 //	if (err)  { return (NULL); }
-	
+
 	/* If we have a host, means we supposely know who we are */
 	if (strlen(conf->hostname) > 0)
 		strcpy(addr_if, addr_name);

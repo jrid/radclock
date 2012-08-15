@@ -272,13 +272,14 @@ ieee1588_client_init(struct radclock_handle *handle)
 		return (1);
 	}
 
-	/* Enable multicast loop-back */
+	/* Enable multicast loop-back XXX do we need that? (no) */
+/*
 	err = setsockopt(sd, IPPROTO_IP, IP_MULTICAST_LOOP, (int []){1}, sizeof(int));
 	if (err == -1) {
 		verbose(LOG_ERR, "Enabling multicast loop-back");
 		return (1);
 	}
-
+*/
 	/*
 	 * Set the socket timestamping flags for receiving both the raw hardware
 	 * timestamp and the hardware timestamp converted to system time.  We only
@@ -317,27 +318,38 @@ ieee1588_client_init(struct radclock_handle *handle)
  * <kernel_source>/Documentation/networking/timestamping/timestamp.c
  */
 static void
-get_errq_data(struct radclock_handle *handle, char *clock_id)
+get_errq_data(struct radclock_handle *handle, char *clock_id,
+		unsigned char * ptp_msg, size_t msglen)
 {
+    uint64_t tsc, vals[2];
 	ssize_t bytes;
 	struct msghdr msg;
 	struct iovec iov;
-	struct cmsghdr *cmsg, *cmsgts;
+	struct cmsghdr *cmsg, *cmsgts, *cmsgerr, *cmsgrad;
 	struct sockaddr_in addr;
-	uint64_t *stamp;
+	struct timespec *stamp;
 	struct timespec kstamp;
 	vcounter_t vcount;
 	struct ptp_header *ptph;
+    struct {
+		struct cmsghdr cm;
+		char control[1024];
+	} control;
 	unsigned char buf[1024] = {0};
 	int sd;
+	uint8_t *p;
+	int count;
 
+	JDEBUG
+
+	memset(&msg, 0, sizeof(msg));
 	memset(&addr, 0, sizeof(addr));
 	memset(&iov, 0, sizeof(iov));
 	memset(&msg, 0, sizeof(msg));
 	msg.msg_name = (unsigned char *)&addr;
 	msg.msg_namelen = sizeof(addr);
-	msg.msg_control = buf;
-	msg.msg_controllen = sizeof(buf);
+	msg.msg_control = &control;
+	msg.msg_controllen = sizeof(control);
 	msg.msg_iov = &iov;
 	msg.msg_iovlen = 1;
 	msg.msg_flags = 0;
@@ -348,27 +360,117 @@ get_errq_data(struct radclock_handle *handle, char *clock_id)
 // XXX should we use recvfrom instead to check addr etc.?
 	sd = IEEE1588_CLIENT(handle)->socket;
 
-	if ((bytes = recvmsg(sd, &msg, MSG_ERRQUEUE | MSG_DONTWAIT)) < 0)
+//	if ((bytes = recvmsg(sd, &msg, MSG_ERRQUEUE | MSG_DONTWAIT)) < 0)
+	if ((bytes = recvmsg(sd, &msg, MSG_ERRQUEUE)) < 0)
 		return;
 
+	verbose(LOG_ERR, "Finished blocking on errq");
+
+	count = 0;
 	/* Iterate across the aux/ancliarily data for the message from the errq */
 	for (cmsg=CMSG_FIRSTHDR(&msg); cmsg; cmsg=CMSG_NXTHDR(&msg, cmsg)) {
+
+		/*
+		 * Kernel code push 3 CMSG in the error queue:
+		 * - timestamp structure from the NIC (3 timespecs, sw stamp,
+		 *   hw skewed stamp, hw raw stamp)
+		 * - error message (not sure what it is)
+		 * - radclock specific stuff (extra patch)
+		 * Make sure what we read follows this pattern.
+		 */
+		cmsgts = cmsg;
+		cmsgrad = CMSG_NXTHDR(&msg, cmsgts);
+		cmsgerr = CMSG_NXTHDR(&msg, cmsgrad);
+
+		if (!cmsgerr || !cmsgrad) {
+			verbose(LOG_ERR, "CMSG headers break %p %p", cmsgerr, cmsgrad);
+			break;
+		}
+
+
+		if (cmsgts->cmsg_level == SOL_SOCKET && cmsgts->cmsg_type == SO_TIMESTAMPING)
+			verbose(LOG_ERR, "looks we got a timestamp message");
+		else
+			continue;
+
+		if (cmsgerr->cmsg_level == IPPROTO_IP && cmsgerr->cmsg_type == IP_RECVERR)
+			verbose(LOG_ERR, "looks we got an error CMSG header");
+		else
+			continue;
+
+		#define NUMBER_OF_THE_BEAST 666
+		if (cmsgrad->cmsg_level == SOL_SOCKET && cmsgrad->cmsg_type == NUMBER_OF_THE_BEAST)
+			verbose(LOG_ERR, "looks we got a rad cmsg");
+		else
+			continue;
+
+		verbose(LOG_ERR, "CMSG timestamp:");
+		print_bytes((uint8_t *)CMSG_DATA(cmsgts),
+				cmsgts->cmsg_len - sizeof(struct cmsghdr));
+
+		verbose(LOG_ERR, "CMSG data??:");
+		print_bytes((uint8_t *)CMSG_DATA(cmsgrad),
+				cmsgrad->cmsg_len - sizeof(struct cmsghdr));
+
+		/*
+		 * Software timestamp (should be all zeros as we didnt set it via
+		 * setsockopt)
+		 */
+		stamp = (struct timespec *)CMSG_DATA(cmsgts);
+		verbose(LOG_ERR, "1588 EQ - SW: %ld.%09ld",
+				(long)((struct timespec *)stamp)->tv_sec,
+				(long)((struct timespec *)stamp)->tv_nsec);
+
+		/* The next timestamp is the hw counter converted to sys time */
+		++stamp;
+		kstamp = *((struct timespec *)stamp);
+		verbose(LOG_ERR, "1588 EQ - HW Modified: %ld.%09ld",
+				(long)kstamp.tv_sec, (long)kstamp.tv_nsec);
+
+		/* The third timestamp is the raw hardware counter value */
+		++stamp;
+		kstamp = *((struct timespec *)stamp);
+		verbose(LOG_ERR, "1588 EQ - HW RAW: %ld.%09ld",
+				(long)kstamp.tv_sec, (long)kstamp.tv_nsec);
+//		vcount = ((long)kstamp.tv_sec) * 1000000000L;
+//		vcount += ((long)kstamp.tv_nsec);
+//		verbose(LOG_ERR, "1588 EQ - Raw: %llu", (long long)vcount);
+
+
+		/* Parse RAD CMSG */
+		vals[0] = *(uint64_t *)CMSG_DATA(cmsgrad);
+		vals[1] = *(uint64_t *)(CMSG_DATA(cmsgrad) + sizeof(uint64_t));
+		vcount = vals[1];
+		verbose(LOG_ERR, "Magic: 0x%4x Cumulative Counter: %lu", (int)vals[0], vcount);
+
+
 		/*
 		 * This has to be a DELAY_REQ. Make sure we have received enough bytes
 		 * to parse the header, check a few fields to see if it is an IEEE 1588
 		 * message (version, type and clock_id since we sent it).
 		 */
-		if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_RECVERR) {
-			if (bytes < (sizeof(struct ptp_header) + sizeof(struct ptp_delayreq)))
-				continue;
-			ptph = (struct ptp_header *)CMSG_DATA(cmsg);
-
-			if (PTP_MSG_TYPE(ptph->type_transp_flags) != 0x1 ||
-					PTP_VERSION(ptph->ver_reserved_flags) != 0x2 ||
-					memcmp(ptph->src_port, clock_id, 10) != 0) {
-				continue;
-			}
+// I am not sure this makes any sense at all. Is bytes the same as CMSG_LEN?
+		if (bytes < (sizeof(struct ptp_header) + sizeof(struct ptp_delayreq))) {
+			verbose(LOG_ERR, "Truncated packet");
+			continue;
 		}
+
+// FIXME: this is really not working
+		// 42 = sizeof(ethernet + IP + UDP) .... XXX HELP!!
+		ptph = (struct ptp_header *)(buf + 42);
+
+//			if (PTP_MSG_TYPE(ptph->type_transp_flags) != 0x1 ||
+//					PTP_VERSION(ptph->ver_reserved_flags) != 0x2 ||
+//					memcmp(ptph->src_port, clock_id, 10) != 0) {
+//				verbose(LOG_ERR, "Not a PTP message");
+//				continue;
+//			}
+//			else
+				verbose(LOG_ERR, "!!!! PTP message");
+
+verbose(LOG_ERR, "ptp_msg_type = %d", PTP_MSG_TYPE(ptph->type_transp_flags));
+verbose(LOG_ERR, "ptp_version = %d", PTP_VERSION(ptph->ver_reserved_flags));
+
 
 		/*
 		 * We found a delay request, the next cmsg header must give us access to
@@ -380,34 +482,17 @@ get_errq_data(struct radclock_handle *handle, char *clock_id)
 		 * the kernel docs <kernel>/Documentation/networking/timestamping/.
 		 * If implementation changes, good luck figuring out whats changed.
 		 */
-		cmsgts = CMSG_NXTHDR(&msg, cmsg);
-		if (cmsgts->cmsg_level != SOL_SOCKET ||
-				cmsgts->cmsg_type != SO_TIMESTAMPING)
-			continue;
-
-		/*
-		 * Software timestamp (should be all zeros as we didnt set it via
-		 * setsockopt)
-		 */
-		stamp = (uint64_t *)CMSG_DATA(cmsg);
-		verbose(VERB_DEBUG,"1588 EQ - SW: %ld.%09ld\n",
-				(long)((struct timespec *)stamp)->tv_sec,
-				(long)((struct timespec *)stamp)->tv_nsec);
-
-		/* The next timestamp is the hw counter converted to sys time */
-		++stamp;
-		kstamp = *((struct timespec *)stamp);
-		printf(VERB_DEBUG, "1588 EQ - HW Modified: %ld.%09ld\n",
-				(long)kstamp.tv_sec, (long)kstamp.tv_nsec);
-
-		/* The third timestamp is the raw hardware counter value */
-		++stamp;
-		vcount = *(vcounter_t *)stamp;
-		verbose(VERB_DEBUG,"1588 EQ - Raw: %llu\n", (long long)vcount);
+//		cmsgts = CMSG_NXTHDR(&msg, cmsg);
+//		if (cmsgts->cmsg_level != SOL_SOCKET ||
+//				cmsgts->cmsg_type != SO_TIMESTAMPING)
+//			continue;
 
 		// Need to insert the packet in fake pcap queue
-		fill_rawdata_1588eq(handle, vcount, kstamp, CMSG_DATA(cmsg),
-				sizeof(struct ptp_header) + sizeof(struct ptp_delayreq));
+
+//		fill_rawdata_1588eq(handle, vcount, kstamp, (unsigned char *)ptph,
+//				sizeof(struct ptp_header) + sizeof(struct ptp_delayreq));
+
+		fill_rawdata_1588eq(handle, vcount, kstamp, ptp_msg, msglen);
 	}
 }
 
@@ -455,18 +540,27 @@ verbose(LOG_ERR, "Sending DelayRequest message:");
 	memset(&tv, 0, sizeof(tv));
 	tv.tv_sec = 1;
 	tv.tv_usec = 0;
-	err = select(IEEE1588_CLIENT(handle)->socket + 1, &fds, NULL, NULL, &tv);
-	if (err == -1) {
-		verbose(LOG_ERR, "IEEE 1588 Select error on socket");
-		return (1);
-	}
+//	err = select(IEEE1588_CLIENT(handle)->socket + 1, &fds, NULL, NULL, &tv);
+//	if (err == -1) {
+//		verbose(LOG_ERR, "IEEE 1588 Select error on socket");
+//		return (1);
+//	}
+//	if (err == 0)
+//		verbose(LOG_ERR, "IEEE 1588 select timed out on socket");
+//	else
+//		verbose(LOG_ERR, "IEEE 1588 select with %d descriptors", err);
+
 
 	/* Check the sockets */
-	if (FD_ISSET(IEEE1588_CLIENT(handle)->socket, &fds))
-		get_errq_data(handle, clock_id);
+//	if (FD_ISSET(IEEE1588_CLIENT(handle)->socket, &fds)) {
+		verbose(LOG_ERR, "Checking error queue");
+		get_errq_data(handle, clock_id, buf, bytes);
+//	}
 
 	/* Wait and resend */
-	sleep(1);
+	sleep(handle->conf->poll_period);
+
+verbose(LOG_ERR, "sleeping for %d", handle->conf->poll_period);
 
 	return (0);
 }
