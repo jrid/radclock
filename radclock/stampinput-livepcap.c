@@ -494,27 +494,61 @@ int get_address_by_name(char* addr, char* hostname)
  */
 // XXX TODO: should accept IP addresses only, and make it IPv6 friendly
 int
-build_BPFfilter(struct radclock_handle *handle, char *fltstr, int maxsize,
-		char *hostname, char *ntp_host)
+bpf_filter_ntp(struct radclock_handle *handle, struct radclock_config *conf,
+		char *fltstr, int maxsize, char *hostname)
 {
 	int strsize;
 	char ntp_filter[150];
+	char *ntp_host;
+
+	ntp_host = conf->time_server;
 	
 	if (strlen(hostname) == 0) {
 		verbose(LOG_ERR, "No host info, no BPF filter");
 		return (-1);
 	}
 	if (strlen(ntp_host) == 0) {
-		verbose(LOG_WARNING, "No NTP server specified, the BPF filter is not tight enough !!!");
+		verbose(LOG_WARNING, "No NTP server specified, the BPF filter is not "
+				"tight enough !!!");
 		sprintf(ntp_filter, ") or (");
 	}
 	else
-		sprintf(ntp_filter, "and dst host %s) or (src host %s and", ntp_host, ntp_host);
+		sprintf(ntp_filter, "and dst host %s) or (src host %s and", ntp_host,
+				ntp_host);
 
 	strsize = snprintf(fltstr, maxsize, "(src host %s and dst port %d %s "
 			"dst host %s and src port %d)", hostname,
 			handle->conf->ntp_upstream_port, ntp_filter, hostname,
 			handle->conf->ntp_upstream_port);
+
+	return (strsize);
+}
+
+
+// TODO: there are a few hard coded values in here. Should change this after
+// testing
+int
+bpf_filter_ieee1588(struct radclock_handle *handle, struct radclock_config *conf,
+		char *fltstr, int maxsize, char *hostname)
+{
+	int strsize;
+	char *ptp_master;
+
+	ptp_master = conf->time_server;
+
+	if (strlen(hostname) == 0) {
+		verbose(LOG_ERR, "No host info, no BPF filter");
+		return (-1);
+	}
+	if (strlen(ptp_master) == 0) {
+		verbose(LOG_WARNING, "No IEEE 1588 master specified, the BPF filter is not "
+				"tight enough !!!");
+		return (-1);
+	}
+
+	strsize = snprintf(fltstr, maxsize, "(src host %s or src host %s) "
+			"and dst host 224.0.1.129 and (dst port 319 or dst port 320)",
+			hostname, ptp_master);
 
 	return (strsize);
 }
@@ -571,11 +605,23 @@ open_live(struct radclock_handle *handle, struct livepcap_data *ldata)
 			addr_if);
 	verbose(LOG_NOTICE, "Opening device %s", conf->network_device);
 
-	/* Build the BPF filter string
-	 */
+	/* Build the BPF filter string */
 	strcpy(fltstr, "");
-	strsize = build_BPFfilter(handle, fltstr, MAXLINE, addr_if,
-			conf->time_server);
+	switch (conf->synchro_type) {
+	case SYNCTYPE_NTP:
+	case SYNCTYPE_PIGGY:
+		strsize = bpf_filter_ntp(handle, conf, fltstr, MAXLINE, addr_if);
+		break;
+
+	case SYNCTYPE_1588:
+		strsize = bpf_filter_ieee1588(handle, conf, fltstr, MAXLINE, addr_if);
+		break;
+
+	default:
+		verbose(LOG_ERR, "Wrong sync source type");
+		return (NULL);
+	}
+
 	if ((strsize < 0) || (strsize > MAXLINE-2)) {
 		verbose(LOG_ERR, "BPF filter string error (too long?)");
 		return (NULL);
@@ -804,9 +850,26 @@ livepcapstamp_update_filter(struct radclock_handle *handle, struct stampsource *
 	char fltstr[MAXLINE];               // bpf filter string
 	int strsize;
 
+	// TODO this is ugly, it would make more sense to have the source structure
+	// contain its own type, so we don't have to refer to the conf structure
+	struct radclock_config *conf;
+	conf = handle->conf;
+
 // TODO XXX: should pass IP addresses only to libpcap and not hostnames!
-	strsize = build_BPFfilter(handle, fltstr, MAXLINE, handle->conf->hostname,
-			handle->conf->time_server);
+	switch (conf->synchro_type) {
+	case SYNCTYPE_NTP:
+	case SYNCTYPE_PIGGY:
+		strsize = bpf_filter_ntp(handle, conf, fltstr, MAXLINE, conf->hostname);
+		break;
+
+	case SYNCTYPE_1588:
+		strsize = bpf_filter_ieee1588(handle, conf, fltstr, MAXLINE, conf->hostname);
+		break;
+
+	default:
+		verbose(LOG_ERR, "Wrong sync source type");
+		return (NULL);
+	}
 
 	if ((strsize < 0) || (strsize > MAXLINE-2) ) {
 		verbose(LOG_ERR, "BPF filter string error (too long?)");
