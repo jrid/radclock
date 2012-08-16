@@ -80,6 +80,7 @@ struct radclock_ntp_server {
  * IEEE 1588 Protocol related stuff
  */
 struct radclock_ieee1588_client {
+	uint64_t clock_id;
 	int socket;
 	struct sockaddr_in s_to;
 	struct sockaddr_in s_from;

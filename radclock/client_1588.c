@@ -72,6 +72,30 @@ int ieee1588_client(struct radclock_handle *handle) { return(1); }
 #include "jdebug.h"
 
 
+/*
+ * Build the stamp ID. Extract 6 bytes of original MAC address (remove
+ * central 0xfffe) and OR the seq id. This makes a 64bit ID.
+ */
+static inline void
+pack_clock_id(uint8_t *dst, uint64_t clock_id, uint16_t port)
+{
+	uint32_t *c;
+	uint16_t *p;
+	c = (uint32_t *)dst;
+	p = (uint16_t *)(dst + 8);
+
+	*c = htonl((uint32_t)clock_id);
+	*(c+1) = htonl((uint32_t)(clock_id >> 32));
+	*p = htons(port);
+
+	c = &clock_id;
+	verbose(LOG_ERR, "packing clock_id : %x %x", *c, *(c+1));
+
+	c = (uint32_t *) dst;
+	verbose(LOG_ERR, "packing clock_id : %x %x", *c, *(c+1));
+
+}
+
 
 static void
 pack_ptpstamp(uint8_t *p, struct ptp_stamp *stamp)
@@ -140,6 +164,7 @@ create_delay_req(struct radclock_handle *handle, uint8_t *buf, size_t *bytes,
 //	long double time;
 	struct timespec ts;
 	struct ptp_stamp stamp, stamp2;
+	uint16_t port;
 	int i;
 
 	*bytes = sizeof(struct ptp_header) + sizeof(struct ptp_delayreq);
@@ -150,13 +175,8 @@ create_delay_req(struct radclock_handle *handle, uint8_t *buf, size_t *bytes,
 	hdr->type_transp_flags  |= PTP_MSG_TYPE(0x1);
 	hdr->ver_reserved_flags |= PTP_VERSION(0x2);
 	hdr->length = ntohs(44);
-
-	for (i=0; i<8; i++) {
-		*(hdr->src_port + i) = 0xAA;
-	}
-	*(hdr->src_port + 8) = 0;
-	*(hdr->src_port + 9) = 1;
-
+	port = 1;
+	pack_clock_id(hdr->src_port, IEEE1588_CLIENT(handle)->clock_id, port);
 	hdr->seq = ntohs((uint16_t)seq);
 	hdr->control = 1;
 
@@ -180,7 +200,12 @@ create_delay_req(struct radclock_handle *handle, uint8_t *buf, size_t *bytes,
 	unpack_ptpstamp((uint8_t *)&req->stamp, &stamp2);
 
 verbose(LOG_ERR, "delay request %d has stamp: %ld.09%ld", seq, stamp.sec, stamp.nsec);
+
 verbose(LOG_ERR, "delay request %d has stamp: %ld.09%ld", seq, stamp2.sec, stamp2.nsec);
+
+verbose(LOG_ERR, "delay request %d clock_id = %x", seq, stamp.sec, stamp.nsec, ntohl((uint32_t)*hdr->src_port));
+
+
 
 	return (0);
 }
@@ -299,6 +324,7 @@ ieee1588_client_init(struct radclock_handle *handle)
 	}
 
 	/* Registre the socket in the radclock handle */
+	IEEE1588_CLIENT(handle)->clock_id = 0xBEEFCAFE0BADF00D;
 	IEEE1588_CLIENT(handle)->socket = sd;
 	IEEE1588_CLIENT(handle)->s_to = addr;
 	addr.sin_family = AF_INET;
@@ -318,7 +344,7 @@ ieee1588_client_init(struct radclock_handle *handle)
  * <kernel_source>/Documentation/networking/timestamping/timestamp.c
  */
 static void
-get_errq_data(struct radclock_handle *handle, char *clock_id,
+get_errq_data(struct radclock_handle *handle, uint8_t *clock_id,
 		unsigned char * ptp_msg, size_t msglen)
 {
     uint64_t tsc, vals[2];
