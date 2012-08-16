@@ -952,29 +952,27 @@ push_stamp_ntp(struct stamp_queue *q, radpcap_packet_t *packet,
  * central 0xfffe) and OR the seq id. This makes a 64bit ID.
  */
 static inline void
-extract_clock_id(char *p, uint64_t *clock_id)
+extract_clock_id(char *p, uint64_t *clock_id, uint16_t *port_id)
 {
-	uint64_t id, id2;
+	uint64_t low, high;
 
-	id = ntohl(*(uint32_t *)(p + 4));
-	id = (id >> 16) << 48;
-	id2 = ntohl(*(uint32_t *)p);
-	id2 = (id2 << 48) >> 32;
-	*clock_id = id | id2;
+	low = ntohl(*(uint32_t *)(p));
+	high = ntohl(*(uint32_t *)(p + 4));
+	*clock_id = (high << 32) | low;
+	*port_id = ntohs((uint16_t *)(p + 8));
 }
 
 
-// FIXME quick trick for testing
-uint64_t lastid = 0;
 
 int
-push_stamp_1588(struct stamp_queue *q, radpcap_packet_t *packet,
+push_stamp_1588(struct stamp_queue *q, uint64_t myclockid, radpcap_packet_t *packet,
 		struct udphdr *udph, int remaining, vcounter_t *vcount,
 		struct timeref_stats *stats)
 {
 	struct ptp_header *ptph;
 	struct stamp_t stamp;
 	uint64_t clock_id;
+	uint16_t port_id;
 	uint64_t sec, nsec;
 	long double tstamp;
 	int ptp_msg_type;
@@ -1023,12 +1021,14 @@ verbose(LOG_ERR, "push stamp 1588 type %d", ptp_msg_type);
 
 	if (ptp_msg_type == PTP_DELAYRESP) {
 		p = (char *)ptph + PTP_HEADER_LEN + 10;
-		extract_clock_id(p, &clock_id);
+		extract_clock_id((uint8_t *)p, &clock_id, &port_id);
 	}
 	else {
 		p = (char *)ptph->src_port;
-		extract_clock_id(p, &clock_id);
+		extract_clock_id((uint8_t *)p, &clock_id, &port_id);
 	}
+
+verbose(LOG_ERR, "clock_id= %x myclock_id = %x", (uint32_t)clock_id, (uint32_t)myclockid);
 
 	/* Extract remote timestamp */
 	p = (char *)ptph + PTP_HEADER_LEN;
@@ -1070,14 +1070,14 @@ verbose(LOG_ERR, "stamp.id: %llu", stamp.id);
 	// piggy backing on another 1588 daemon. Otherwise, problem goes away.
 	else if (ptp_msg_type == PTP_DELAYREQ) {
 		BST(&stamp)->Ta = *vcount;
-		if (lastid != clock_id)
-			lastid = clock_id;
+		if (clock_id != myclockid)
+			return (0);
 	}
 	// FIXME: This is the delay response and we are missing the Te timestamp
 	// that doesn't exist with 1588. Make a fake one 5 mus after the receive
 	else if (ptp_msg_type == PTP_DELAYRESP) {
 		/* Discard delay response intended to someone else */
-		if (clock_id != lastid)
+		if (clock_id != myclockid)
 			return (0);
 		BST(&stamp)->Tb = tstamp;
 		BST(&stamp)->Te = tstamp + 5e-6;
@@ -1098,8 +1098,8 @@ verbose(LOG_ERR, "stamp.id: %llu", stamp.id);
  * checks and insertion/matching in the peer's stamp queue.
  */
 int
-update_stamp_queue(struct stamp_queue *q, radpcap_packet_t *packet,
-		struct timeref_stats *stats)
+update_stamp_queue(struct stamp_queue *q, uint64_t ieee1588_clockid,
+		radpcap_packet_t *packet, struct timeref_stats *stats)
 {
 	struct udphdr *udph;
 	struct sockaddr_storage ss_src, ss_dst;
@@ -1129,7 +1129,8 @@ update_stamp_queue(struct stamp_queue *q, radpcap_packet_t *packet,
 		break;
 
 	case STAMP_1588:
-		err = push_stamp_1588(q, packet, udph, remaining, &vcount, stats);
+		err = push_stamp_1588(q, ieee1588_clockid, packet, udph, remaining,
+				&vcount, stats);
 		break;
 
 	default:
@@ -1275,7 +1276,9 @@ get_network_stamp(struct radclock_handle *handle, void *userdata,
 		 *  1: inserted packet in queue, but did not pair it. Break with code to
 		 *     be called again.
 		 */
-		err = update_stamp_queue(peer->q, packet, stats);
+		//err = update_stamp_queue(peer->q, packet, stats);
+		// FIXME: 1588 CLOCK_ID trick ... super ugly
+		err = update_stamp_queue(peer->q, 0 /* FIXME */, packet, stats);
 		switch (err) {
 		case -1:
 			verbose(LOG_ERR, "Stamp queue error");
@@ -1314,7 +1317,8 @@ get_network_stamp(struct radclock_handle *handle, void *userdata,
 			stats->ref_count++;
 
 			/* Convert packet to stamp and push it to the stamp queue */
-			err = update_stamp_queue(peer->q, packet, stats);
+			err = update_stamp_queue(peer->q, IEEE1588_CLIENT(handle)->clock_id,
+					packet, stats);
 
 			/* Low level / input problem worth stopping */
 			if (err == -1)
