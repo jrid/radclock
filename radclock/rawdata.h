@@ -103,7 +103,8 @@ struct raw_data_queue {
 #define RD_PKT(x) (&((x)->rd.rd_pkt))
 #define RD_SPY(x) (&((x)->rd.rd_spy))
 
-
+void fill_rawdata_1588eq(struct radclock_handle *handle, vcounter_t vcount,
+		struct timespec ts, unsigned char *pkt, size_t pktlen);
 
 int capture_raw_data(struct radclock_handle *handle);
 

@@ -259,16 +259,19 @@ ieee1588_client_init(struct radclock_handle *handle)
  * <kernel_source>/Documentation/networking/timestamping/timestamp.c
  */
 static void
-get_errq_data(int sd, char *clock_id)
+get_errq_data(struct radclock_handle *handle, char *clock_id)
 {
 	ssize_t bytes;
 	struct msghdr msg;
 	struct iovec iov;
 	struct cmsghdr *cmsg, *cmsgts;
 	struct sockaddr_in addr;
-	struct timespec *stamp;
+	uint64_t *stamp;
+	struct timespec kstamp;
+	vcounter_t vcount;
 	struct ptp_header *ptph;
 	unsigned char buf[1024] = {0};
+	int sd;
 
 	memset(&addr, 0, sizeof(addr));
 	memset(&iov, 0, sizeof(iov));
@@ -285,6 +288,8 @@ get_errq_data(int sd, char *clock_id)
 
 	/* Get the message back from the socket's error queue */
 // XXX should we use recvfrom instead to check addr etc.?
+	sd = IEEE1588_CLIENT(handle)->socket;
+
 	if ((bytes = recvmsg(sd, &msg, MSG_ERRQUEUE | MSG_DONTWAIT)) < 0)
 		return;
 
@@ -326,21 +331,25 @@ get_errq_data(int sd, char *clock_id)
 		 * Software timestamp (should be all zeros as we didnt set it via
 		 * setsockopt)
 		 */
-		stamp = (struct timespec *)CMSG_DATA(cmsg);
-		printf("[S] SW: %ld.%09ld\n", (long)stamp->tv_sec,
-				(long)stamp->tv_nsec);
+		stamp = (uint64_t *)CMSG_DATA(cmsg);
+		verbose(VERB_DEBUG,"1588 EQ - SW: %ld.%09ld\n",
+				(long)((struct timespec *)stamp)->tv_sec,
+				(long)((struct timespec *)stamp)->tv_nsec);
 
 		/* The next timestamp is the hw counter converted to sys time */
 		++stamp;
-		printf("[S] HW Modified: %ld.%09ld\n", (long)stamp->tv_sec,
-				(long)stamp->tv_nsec);
+		kstamp = *((struct timespec *)stamp);
+		printf(VERB_DEBUG, "1588 EQ - HW Modified: %ld.%09ld\n",
+				(long)kstamp.tv_sec, (long)kstamp.tv_nsec);
 
 		/* The third timestamp is the raw hardware counter value */
 		++stamp;
-		printf("[S] Raw: %ld.%09ld\n", (long)stamp->tv_sec,
-				(long)stamp->tv_nsec);
+		vcount = *(vcounter_t *)stamp;
+		verbose(VERB_DEBUG,"1588 EQ - Raw: %llu\n", (long long)vcount);
 
 		// Need to insert the packet in fake pcap queue
+		fill_rawdata_1588eq(handle, vcount, kstamp, CMSG_DATA(cmsg),
+				sizeof(struct ptp_header) + sizeof(struct ptp_delayreq));
 	}
 }
 
@@ -371,6 +380,7 @@ ieee1588_client(struct radclock_handle *handle)
 	if (err == -1) {
 		verbose(LOG_ERR, "Sending DelayRequest message");
 		return (1);
+	}
 
 	/* Receive data */
 	FD_ZERO(&fds);
@@ -386,11 +396,10 @@ ieee1588_client(struct radclock_handle *handle)
 
 	/* Check the sockets */
 	if (FD_ISSET(IEEE1588_CLIENT(handle)->socket, &fds))
-		get_errq_data(IEEE1588_CLIENT(handle)->socket, clock_id);
+		get_errq_data(handle, clock_id);
 
 	/* Wait and resend */
-		sleep(1);
-	}
+	sleep(1);
 
 	return (0);
 }
