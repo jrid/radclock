@@ -49,6 +49,7 @@
 #include "radclock_daemon.h"
 #include "verbose.h"
 #include "proto_ntp.h"
+#include "proto_1588.h"
 #include "sync_history.h"        /* Because need  struct bidir_stamp defn */
 #include "sync_algo.h"        /* Because need  struct bidir_stamp defn */
 #include "ntohll.h"
@@ -73,8 +74,13 @@ struct stamp_queue {
 	int size;
 };
 
-/* To prevent allocating heaps of memory if stamps are not paired in queue */
-#define MAX_STQ_SIZE	20
+/*
+ * Upper bound or stamp queue size to prevent allocating heaps of memory if many
+ * stamps are inserted in stamp queue. Potential causes are:
+ * - bidir stamps not paired in queue
+ * - many unidir stamps (1588) in between bidir-stamps
+ */
+#define MAX_STQ_SIZE	40
 
 
 /*
@@ -178,7 +184,7 @@ check_ipv6(struct ip6_hdr *ip6h, int remaining)
 
 
 /*
- * Get the IP payload from the radpcap_packet_t packet.  Here also (in addition
+ * Get the UDP payload from the radpcap_packet_t packet.  Here also (in addition
  * to get_vcount) we handle backward compatibility since we changed the way the
  * vcount and the link layer header are managed.
  *
@@ -189,12 +195,10 @@ check_ipv6(struct ip6_hdr *ip6h, int remaining)
  * In live capture, the ssl header MUST be inserted before calling this function
  * Ideally, we would like to get rid of formats 1 and 2 to simplify the code.
  */
-// TODO and for non NTP packets? (ie 1588)
-// FIXME: the ip pointer is dirty and will break with IPv6 packets
 int
-get_valid_ntp_payload(radpcap_packet_t *packet, struct ntp_pkt **ntp,
+get_udp_payload(radpcap_packet_t *packet, struct udphdr **udpheader,
 		struct sockaddr_storage *ss_src, struct sockaddr_storage *ss_dst,
-		int *ttl)
+		int *ttl, int *rem)
 {
 	struct sockaddr_in *sin;
 	struct sockaddr_in6 *sin6;
@@ -209,6 +213,7 @@ get_valid_ntp_payload(radpcap_packet_t *packet, struct ntp_pkt **ntp,
 	JDEBUG
 
 	remaining = ((struct pcap_pkthdr *)packet->header)->caplen;
+	udph = NULL;
 
 	switch (packet->type) {
 
@@ -310,19 +315,8 @@ get_valid_ntp_payload(radpcap_packet_t *packet, struct ntp_pkt **ntp,
 		return (1);
 	}
 
-	*ntp = (struct ntp_pkt *)((char *)udph + sizeof(struct udphdr));
-	remaining -= sizeof(struct udphdr);
-
-	/*
-	 * Make sure the NTP packet is not truncated. A normal NTP packet is at
-	 * least 48 bytes long, but a control or private request is as small as 12
-	 * bytes.
-	 */
-	if (remaining < 12) {
-		verbose(LOG_WARNING, "NTP packet truncated, payload is %d bytes "
-			"instead of at least 12 bytes", remaining);
-		return (1);
-	}
+	*udpheader = udph;
+	*rem = remaining;
 
 	return (0);
 }
@@ -356,6 +350,7 @@ get_vcount_from_etherframe(radpcap_packet_t *packet, vcounter_t *vcount)
 	return (0);
 }
 
+
 /*
  * Retrieve the vcount value from the address field of the LINUX SLL
  * encapsulation header
@@ -371,7 +366,7 @@ get_vcount_from_sll(radpcap_packet_t *packet, vcounter_t *vcount)
 		verbose(LOG_ERR, "No PCAP or SLL header found.");
 		return (-1);
 	}
-	
+
 	linux_sll_header_t *hdr = packet->payload;
 	if (!hdr) {
 		verbose(LOG_ERR, "No SLL header found.");
@@ -382,9 +377,8 @@ get_vcount_from_sll(radpcap_packet_t *packet, vcounter_t *vcount)
 	memcpy(&aligned_vcount, hdr->addr, sizeof(vcounter_t));
 	*vcount = ntohll(aligned_vcount);
 
-	return 0;
+	return (0);
 }
-
 
 
 /*
@@ -422,6 +416,7 @@ init_peer_stamp_queue(struct bidir_peer *peer)
 	peer->q->end = NULL;
 	peer->q->size = 0;
 }
+
 
 void
 destroy_peer_stamp_queue(struct bidir_peer *peer)
@@ -498,6 +493,44 @@ fix_queue_order(struct stamp_queue *q, struct stq_elt *stq)
 
 
 /*
+ * Test if two stamps are real duplicates. By 'real', this checks if two packets
+ * have transited over the network (or been captured through pcap), carrying the
+ * same time server information. Note that the feed-forward counter value is of
+ * no use here (by definition).
+ */
+int
+is_duplicate_stamp(struct stamp_t *one, struct stamp_t *two)
+{
+	if (one->id != two->id)
+		return (0);
+
+	if (one->type != two->type)
+		return (0);
+
+	if (one->msg_type != two->msg_type)
+		return (0);
+
+	if (one->msg_type == MODE_CLIENT || one->msg_type == PTP_DELAYREQ) {
+		if (BST(one)->Ta == BST(two)->Ta)
+			return (1);
+	}
+
+	if (one->msg_type == MODE_SERVER || one->msg_type == PTP_DELAYRESP) {
+		if (BST(one)->Tf == BST(two)->Tf)
+			return (1);
+	}
+
+	if (one->msg_type == PTP_SYNC || one->msg_type == PTP_FOLLOWUP) {
+		if (UST(one)->remote_stamp == UST(two)->remote_stamp)
+			return (1);
+	}
+
+	/* Passed all checks */
+	return (0);
+}
+
+
+/*
  * Insert a client or server NTP packet into the stamp queue. This routine
  * effectively pairs matching requests and replies. The stamp queue has been
  * introduced to allow matching of out of order NTP packets.
@@ -506,21 +539,21 @@ fix_queue_order(struct stamp_queue *q, struct stq_elt *stq)
  * to the stamp.
  *
  * Quick algo ideas:
- * - use the full walk to find half-baked stamp.
+ * - walk the queue to find half-baked stamp, or stamp to improve..
  * - if was half-baked stamp, update rank and re-order queue if needed
  *   (note that rank defined as receiving stamp, outgoing packets in two-way
  *   requests will see their rank change).
  */
 int
-insert_stamp_queue(struct stamp_queue *q, struct stamp_t *new, int mode)
+insert_stamp_queue(struct stamp_queue *q, struct stamp_t *new)
 {
 	struct stq_elt *stq, *insert, *halfstamp;
 	struct stamp_t *stamp;
 
 	JDEBUG
 
-	if ((mode != MODE_CLIENT) && (mode != MODE_SERVER)) {
-		verbose(LOG_ERR, "Unsupported NTP packet mode: %d", mode);
+	if (new->type != STAMP_NTP && new->type != STAMP_1588) {
+		verbose(LOG_ERR, "Insert stamp queue with unsupported type");
 		return (-1);
 	}
 
@@ -536,18 +569,10 @@ insert_stamp_queue(struct stamp_queue *q, struct stamp_t *new, int mode)
 	stq = q->start;
 	while (stq != NULL) {
 		stamp = &stq->stamp;
-		if ((stamp->type == STAMP_NTP) && (stamp->id == new->id)) {
-			if (mode == MODE_CLIENT) {
-				if (BST(stamp)->Ta != 0) {
-					verbose(LOG_ERR, "Found duplicate NTP client request.");
-					return (-1);
-				}
-			} else {
-				if (BST(stamp)->Tf != 0) {
-					verbose(LOG_ERR, "Found duplicate NTP server request.");
-					return (-1);
-				}
-			}
+		/* Look for duplicates */
+		if (is_duplicate_stamp(stamp, new)) {
+			verbose(LOG_ERR, "Found duplicate stamp (id: %llu)", new->id);
+			return (-1);
 		}
 
 		/* Found half-baked stamp to finish filling */
@@ -620,25 +645,43 @@ insert_stamp_queue(struct stamp_queue *q, struct stamp_t *new, int mode)
 	else
 		stq = halfstamp;
 
-	/* Selectively copy content of new stamp over */
+	/* Copy content of new stamp over */
 	stamp = &stq->stamp;
-	stamp->type = STAMP_NTP;
-	stamp->rank = new->rank;
-	if (mode == MODE_CLIENT) {
-		stamp->id = new->id;
+	stamp->type = new->type;
+	stamp->msg_type = new->msg_type;
+	stamp->id = new->id;
+	strncpy(stamp->server_ipaddr, new->server_ipaddr, 16);
+	stamp->ttl = new->ttl;
+	stamp->refid = new->refid;
+	stamp->stratum = new->stratum;
+	stamp->leapsec = new->leapsec;
+	stamp->rootdelay = new->rootdelay;
+	stamp->rootdispersion = new->rootdispersion;
+
+	switch (new->msg_type) {
+	case MODE_CLIENT:
+	case PTP_DELAYREQ:
 		BST(stamp)->Ta = BST(new)->Ta;
-	} else {
-		stamp->id = new->id;
-		strncpy(stamp->server_ipaddr, new->server_ipaddr, 16);
-		stamp->ttl = new->ttl;
-		stamp->refid = new->refid;
-		stamp->stratum = new->stratum;
-		stamp->leapsec = new->leapsec;
-		stamp->rootdelay = new->rootdelay;
-		stamp->rootdispersion = new->rootdispersion;
+		stamp->rank = new->rank;
+		break;
+	case MODE_SERVER:
+	case PTP_DELAYRESP:
 		BST(stamp)->Tb = BST(new)->Tb;
 		BST(stamp)->Te = BST(new)->Te;
 		BST(stamp)->Tf = BST(new)->Tf;
+		stamp->rank = new->rank;
+		break;
+	case PTP_SYNC:
+		UST(stamp)->remote_stamp = UST(new)->remote_stamp;
+		UST(stamp)->local_stamp = UST(new)->local_stamp;
+		stamp->rank = new->rank;
+		break;
+	case PTP_FOLLOWUP:
+		UST(stamp)->remote_stamp = UST(new)->remote_stamp;
+		break;
+	default:
+		verbose(LOG_ERR, "Unknown message type");
+		return (-1);
 	}
 
 	/* Rank of half baked-stamp may have changed, fix queue order */
@@ -648,12 +691,25 @@ insert_stamp_queue(struct stamp_queue *q, struct stamp_t *new, int mode)
 	stq = q->start;
 	while (stq != NULL) {
 		stamp = &stq->stamp;
-		verbose(VERB_DEBUG, "  stamp queue: %llu %.6Lf %.6Lf %llu %llu",
-				(long long unsigned) BST(stamp)->Ta, BST(stamp)->Tb, BST(stamp)->Te,
-				(long long unsigned) BST(stamp)->Tf, (long long unsigned) stamp->id);
+		if (stamp->msg_type == PTP_DELAYREQ || stamp->msg_type == PTP_DELAYRESP ||
+				stamp->msg_type == MODE_CLIENT || stamp->msg_type == MODE_SERVER)
+			verbose(VERB_DEBUG, "  stampq: %llu - BST %llu %.6Lf %.6Lf %llu %llu",
+					stamp->rank,
+					(long long unsigned) BST(stamp)->Ta, BST(stamp)->Tb,
+					BST(stamp)->Te, (long long unsigned) BST(stamp)->Tf,
+					(long long unsigned) stamp->id);
+		else
+			verbose(VERB_DEBUG, "  stampq: %llu - UST %.6Lf %llu %llu",
+					stamp->rank, UST(stamp)->remote_stamp,
+					(long long unsigned)UST(stamp)->local_stamp,
+					(long long unsigned) stamp->id);
+
 		stq = stq->next;
 	}
 
+	/* Signal higher level there may be something to do */
+// TODO: so far, requires that a full bidir-stamp exists in the queue for data
+// to be processed
 	if (halfstamp)
 		return (0);
 	else
@@ -685,6 +741,7 @@ compare_sockaddr_storage(struct sockaddr_storage *first,
 	return (1);
 }
 
+
 int
 is_loopback_sockaddr_storage(struct sockaddr_storage *ss)
 {
@@ -704,8 +761,8 @@ is_loopback_sockaddr_storage(struct sockaddr_storage *ss)
 	return (0);
 // Not sure where to put this at the moment or a cleaner way
 #define NOXENSUPPORT 0x01
-
 }
+
 
 /*
  * Check the client's request.
@@ -713,14 +770,14 @@ is_loopback_sockaddr_storage(struct sockaddr_storage *ss)
  * be tight enough either. Make sure that requests from clients are discarded.
  */
 int
-bad_packet_client(struct ntp_pkt *ntp, struct sockaddr_storage *ss_if,
+bad_ntp_client(struct ntp_pkt *ntp, struct sockaddr_storage *ss_if,
 		struct sockaddr_storage *ss_dst, struct timeref_stats *stats)
 {
 	int err;
 
 	err = compare_sockaddr_storage(ss_if, ss_dst);
 	if (err == 0) {
-		if (!is_loopback_sockaddr_storage(ss_dst)) { 
+		if (!is_loopback_sockaddr_storage(ss_dst)) {
 			verbose(LOG_WARNING, "Destination address in client packet. "
 					"Check the capture filter.");
 			return (1);
@@ -729,6 +786,7 @@ bad_packet_client(struct ntp_pkt *ntp, struct sockaddr_storage *ss_if,
 	return (0);
 }
 
+
 /*
  * Check the server's reply.
  * Make sure that this is not one of our reply to our NTP clients.
@@ -736,14 +794,14 @@ bad_packet_client(struct ntp_pkt *ntp, struct sockaddr_storage *ss_if,
  * Make sure the server's stratum is not insane.
  */
 int
-bad_packet_server(struct ntp_pkt *ntp, struct sockaddr_storage *ss_if,
+bad_ntp_server(struct ntp_pkt *ntp, struct sockaddr_storage *ss_if,
 		struct sockaddr_storage *ss_src, struct timeref_stats *stats)
 {
 	int err;
 
 	err = compare_sockaddr_storage(ss_if, ss_src);
 	if (err == 0) {
-		if (!is_loopback_sockaddr_storage(ss_src)) { 
+		if (!is_loopback_sockaddr_storage(ss_src)) {
 			verbose(LOG_WARNING, "Source address in server packet. "
 					"Check the capture filter.");
 			return (1);
@@ -766,12 +824,13 @@ bad_packet_server(struct ntp_pkt *ntp, struct sockaddr_storage *ss_if,
 	return (0);
 }
 
+
 /*
  * Create a stamp structure, fill it with client side information and pass it
  * for insertion in the peer's stamp queue.
  */
 int
-push_stamp_client(struct stamp_queue *q, struct ntp_pkt *ntp, vcounter_t *vcount)
+push_ntp_stamp_client(struct stamp_queue *q, struct ntp_pkt *ntp, vcounter_t *vcount)
 {
 	struct stamp_t stamp;
 
@@ -781,12 +840,13 @@ push_stamp_client(struct stamp_queue *q, struct ntp_pkt *ntp, vcounter_t *vcount
 	stamp.id |= (uint64_t) ntohl(ntp->xmt.l_fra);
 	stamp.rank = (uint64_t)*vcount;
 	stamp.type = STAMP_NTP;
+	stamp.msg_type = MODE_CLIENT;
 	BST(&stamp)->Ta = *vcount;
 
 	verbose(VERB_DEBUG, "Stamp queue: inserting client stamp->id: %llu",
 			(long long unsigned)stamp.id);
 
-	return (insert_stamp_queue(q, &stamp, MODE_CLIENT));
+	return (insert_stamp_queue(q, &stamp));
 }
 
 
@@ -795,17 +855,18 @@ push_stamp_client(struct stamp_queue *q, struct ntp_pkt *ntp, vcounter_t *vcount
  * for insertion in the peer's stamp queue.
  */
 int
-push_stamp_server(struct stamp_queue *q, struct ntp_pkt *ntp,
+push_ntp_stamp_server(struct stamp_queue *q, struct ntp_pkt *ntp,
 		vcounter_t *vcount, struct sockaddr_storage *ss_src, int *ttl)
 {
 	struct stamp_t stamp;
 
 	JDEBUG
 
-	stamp.type = STAMP_NTP;
 	stamp.id = ((uint64_t) ntohl(ntp->org.l_int)) << 32;
 	stamp.id |= (uint64_t) ntohl(ntp->org.l_fra);
 	stamp.rank = (uint64_t)*vcount;
+	stamp.type = STAMP_NTP;
+	stamp.msg_type = MODE_SERVER;
 
 	// TODO not protocol independent. Getaddrinfo instead?
 	if (ss_src->ss_family == AF_INET)
@@ -830,7 +891,220 @@ push_stamp_server(struct stamp_queue *q, struct ntp_pkt *ntp,
 	verbose(VERB_DEBUG, "Stamp queue: inserting server stamp->id: %llu",
 			(long long unsigned)stamp.id);
 
-	return (insert_stamp_queue(q, &stamp, MODE_SERVER));
+	return (insert_stamp_queue(q, &stamp));
+}
+
+
+
+#if defined(__FreeBSD__) || defined (__APPLE__)
+#define UDP_SRC(x) ntohs(x->uh_sport)
+#define UDP_DST(x) ntohs(x->uh_dport)
+#else
+#define UDP_SRC(x) ntohs(x->source)
+#define UDP_DST(x) ntohs(x->dest)
+#endif
+
+stamp_type_t
+get_time_protocol(struct udphdr *udph)
+{
+	if (UDP_SRC(udph) == 123 || UDP_DST(udph) == 123)
+		return (STAMP_NTP);
+
+	if (UDP_DST(udph) == 319 || UDP_DST(udph) == 320)
+		return (STAMP_1588);
+
+	return (STAMP_UNKNOWN);
+}
+
+
+int
+push_stamp_ntp(struct stamp_queue *q, radpcap_packet_t *packet,
+		struct udphdr *udph, struct sockaddr_storage *ss_src,
+		struct sockaddr_storage *ss_dst, int ttl, int remaining,
+		vcounter_t *vcount, struct timeref_stats *stats)
+{
+	struct ntp_pkt *ntp;
+	struct sockaddr_storage *ss;
+	char ipaddr[INET6_ADDRSTRLEN];
+	int err;
+
+	JDEBUG
+
+	ntp = (struct ntp_pkt *)((char *)udph + sizeof(struct udphdr));
+	remaining -= sizeof(struct udphdr);
+
+	/*
+	 * Make sure the NTP packet is not truncated. A normal NTP packet is at
+	 * least 48 bytes long, but a control or private request is as small as 12
+	 * bytes.
+	 */
+	if (remaining < 12) {
+		verbose(LOG_WARNING, "NTP packet truncated, payload is %d bytes "
+			"instead of at least 12 bytes", remaining);
+		return (1);
+	}
+
+	ss = &packet->ss_if;
+	err = 0;
+	switch (PKT_MODE(ntp->li_vn_mode)) {
+	case MODE_BROADCAST:
+		ss = ss_src;
+		if (ss->ss_family == AF_INET)
+			inet_ntop(ss->ss_family,
+				&((struct sockaddr_in *)&ss)->sin_addr, ipaddr, INET6_ADDRSTRLEN);
+		else
+			inet_ntop(ss->ss_family,
+				&((struct sockaddr_in6 *)ss)->sin6_addr, ipaddr, INET6_ADDRSTRLEN);
+		verbose(VERB_DEBUG,"Received NTP broadcast packet from %s (Silent discard)",
+				ipaddr);
+		break;
+
+	case MODE_CLIENT:
+		err = bad_ntp_client(ntp, ss, ss_dst, stats);
+		if (err)
+			break;
+		err = push_ntp_stamp_client(q, ntp, vcount);
+		break;
+
+	case MODE_SERVER:
+		err = bad_ntp_server(ntp, ss, ss_src, stats);
+		if (err)
+			break;
+		err = push_ntp_stamp_server(q, ntp, vcount, ss_src, &ttl);
+		break;
+
+	default:
+		// `silent' cause is lost server pkt
+		verbose(VERB_DEBUG,"Missed pkt due to invalid mode: mode = %d",
+			PKT_MODE(ntp->li_vn_mode));
+		err = 1;
+		break;
+	}
+
+	return (err);
+}
+
+
+/*
+ * Build the stamp ID. Extract 6 bytes of original MAC address (remove
+ * central 0xfffe) and OR the seq id. This makes a 64bit ID.
+ */
+static inline void
+extract_clock_id(char *p, uint64_t *clock_id)
+{
+	uint64_t id, id2;
+
+	id = ntohl(*(uint32_t *)(p + 4));
+	id = (id >> 16) << 48;
+	id2 = ntohl(*(uint32_t *)p);
+	id2 = (id2 << 48) >> 32;
+	*clock_id = id | id2;
+}
+
+
+// FIXME quick trick for testing
+uint64_t lastid = 0;
+
+int
+push_stamp_1588(struct stamp_queue *q, radpcap_packet_t *packet,
+		struct udphdr *udph, int remaining, vcounter_t *vcount,
+		struct timeref_stats *stats)
+{
+	struct ptp_header *ptph;
+	struct stamp_t stamp;
+	uint64_t id;
+	uint64_t sec;
+	long double tstamp;
+	int ptp_msg_type;
+	char *p;
+
+	JDEBUG
+
+	if (remaining < PTP_HEADER_LEN) {
+		verbose(LOG_WARNING, "Truncated 1588 packet, partial header");
+		return (-1);
+	}
+
+	ptph = (struct ptp_header *)((char *)udph + sizeof(struct udphdr));
+	remaining -= PTP_HEADER_LEN;
+
+	/* Check message is not truncated either. */
+	// TODO deal with all packets types
+	ptp_msg_type = PTP_MSG_TYPE(ptph->type_transp_flags);
+	if (ptp_msg_type == PTP_DELAYRESP)
+		remaining -= 20;
+	else
+		remaining -= 10;
+
+	if (remaining < 0) {
+		verbose(LOG_WARNING, "Truncated 1588 packet, partial message");
+		return (-1);
+	}
+
+	stamp.type = STAMP_1588;
+	stamp.msg_type = ptp_msg_type;
+	stamp.qual_warning = 0;
+
+	/*
+	 * Build the stamp ID. Extract 6 bytes of original MAC address (remove
+	 * central 0xfffe) and OR the seq id. This makes a 64bit ID.
+	 */
+	if (ptp_msg_type == PTP_DELAYRESP) {
+		p = (char *)ptph + PTP_HEADER_LEN + 10;
+		extract_clock_id(p, &id);
+	}
+	else {
+		p = (char *)ptph->src_port;
+		extract_clock_id(p, &id);
+	}
+	stamp.id = id;
+	id = ntohs(ptph->seq);
+	stamp.id = stamp.id | id;
+	stamp.rank = *vcount;
+
+	/* Extract remote timestamp */
+	p = (char *)ptph + PTP_HEADER_LEN;
+	sec = ntohs(*(uint16_t *)p);
+	sec = sec << 32;
+	p += 2;
+	sec = sec | ntohl(*(uint32_t *)p);
+	tstamp = sec;
+	p += 4;
+	sec = ntohl(*(uint32_t *)p);
+	tstamp = tstamp + sec / 1e9;
+
+	/* Store stamps and id tracking */
+	if (ptp_msg_type == PTP_SYNC || ptp_msg_type == PTP_FOLLOWUP) {
+		UST(&stamp)->remote_stamp = tstamp;
+		UST(&stamp)->local_stamp = *vcount;
+	}
+	// TODO track clock id contained in the PTP packet. The BPF filter is
+	// pretty loose, so may capture many delay replies on the multicast address.
+	// Here is a way to filter them out, but the way it is done so far is very
+	// ugly. The minimum would be to store the ID in the peer structure and/or
+	// retrieve it from the actual interface. Evidently this is true only if
+	// piggy backing on another 1588 daemon. Otherwise, problem goes away.
+	else if (ptp_msg_type == PTP_DELAYREQ) {
+		BST(&stamp)->Ta = *vcount;
+		if (lastid != stamp.id >> 16)
+			lastid = stamp.id >> 16;
+	}
+	// FIXME: This is the delay response and we are missing the Te timestamp
+	// that doesn't exist with 1588. Make a fake one 5 mus after the receive
+	else if (ptp_msg_type == PTP_DELAYRESP) {
+		/* Discard delay response intended to someone else */
+		if (stamp.id >> 16 != lastid)
+			return (0);
+		BST(&stamp)->Tb = tstamp;
+		BST(&stamp)->Te = tstamp + 5e-6;
+		BST(&stamp)->Tf = *vcount;
+	}
+	/* Any other 1588 message is discarded */
+	else {
+		return (0);
+	}
+
+	return (insert_stamp_queue(q, &stamp));
 }
 
 
@@ -843,12 +1117,11 @@ int
 update_stamp_queue(struct stamp_queue *q, radpcap_packet_t *packet,
 		struct timeref_stats *stats)
 {
-	struct ntp_pkt *ntp;
-	struct sockaddr_storage ss_src, ss_dst, *ss;
+	struct udphdr *udph;
+	struct sockaddr_storage ss_src, ss_dst;
 	vcounter_t vcount;
-	int ttl;
+	int ttl, remaining;
 	int err;
-	char ipaddr[INET6_ADDRSTRLEN];
 
 	JDEBUG
 
@@ -858,47 +1131,26 @@ update_stamp_queue(struct stamp_queue *q, radpcap_packet_t *packet,
 		return (-1);
 	}
 
-	err = get_valid_ntp_payload(packet, &ntp, &ss_src, &ss_dst, &ttl);
+	err = get_udp_payload(packet, &udph, &ss_src, &ss_dst, &ttl, &remaining);
 	if (err) {
-		verbose(LOG_WARNING, "Not an NTP packet.");
-		return (1);
+		verbose(LOG_WARNING, "No UDP header in here");
+		return (-1);
 	}
 
-	ss = &packet->ss_if;
-	err = 0;
-	switch (PKT_MODE(ntp->li_vn_mode)) {
-	case MODE_BROADCAST:
-		ss = &ss_src;
-		if (ss->ss_family == AF_INET)
-			inet_ntop(ss->ss_family,
-				&((struct sockaddr_in *)&ss)->sin_addr, ipaddr, INET6_ADDRSTRLEN);
-		else
-			inet_ntop(ss->ss_family,
-				&((struct sockaddr_in6 *)ss)->sin6_addr, ipaddr, INET6_ADDRSTRLEN);
-		verbose(VERB_DEBUG,"Received NTP broadcast packet from %s (Silent discard)",
-				ipaddr);
+	switch (get_time_protocol(udph)) {
+
+	case STAMP_NTP:
+		err = push_stamp_ntp(q, packet, udph, &ss_src, &ss_dst, ttl, remaining,
+				&vcount, stats);
 		break;
 
-	case MODE_CLIENT:
-		err = bad_packet_client(ntp, ss, &ss_dst, stats);
-		if (err)
-			break;
-		err = push_stamp_client(q, ntp, &vcount);
-		break;
-
-	case MODE_SERVER:
-		err = bad_packet_server(ntp, ss, &ss_src, stats);
-		if (err)
-			break;
-		err = push_stamp_server(q, ntp, &vcount, &ss_src, &ttl);
+	case STAMP_1588:
+		err = push_stamp_1588(q, packet, udph, remaining, &vcount, stats);
 		break;
 
 	default:
-		// `silent' cause is lost server pkt
-		verbose(VERB_DEBUG,"Missed pkt due to invalid mode: mode = %d",
-			PKT_MODE(ntp->li_vn_mode));
-		err = 1;
-		break;
+		verbose(LOG_ERR, "Could not id time protocol from port number");
+		return (-1);
 	}
 
 	return (err);
@@ -932,7 +1184,10 @@ get_stamp_from_queue(struct stamp_queue *q, struct stamp_t *stamp)
 	stq = q->end;
 	while (stq != NULL) {
 		st = &stq->stamp;
-		if ((BST(st)->Ta != 0) && (BST(st)->Tf != 0)) {
+		if (st->msg_type == PTP_SYNC || st->msg_type == PTP_FOLLOWUP) {
+			verbose(VERB_DEBUG, "Ignoring SYNC or FOLLOWUP packet");
+		}
+		else if ((BST(st)->Ta != 0) && (BST(st)->Tf != 0)) {
 			memcpy(stamp, st, sizeof(struct stamp_t));
 			stq2 = stq;
 			break;
@@ -1099,14 +1354,14 @@ get_network_stamp(struct radclock_handle *handle, void *userdata,
 			}
 		}
 		break;
-	
+
 	case RADCLOCK_SYNC_NOTSET:
 	default:
 		verbose(LOG_ERR, "Run mode not set!");
 		err = -1;
 		break;
 	}
-	
+
 	/* Make sure we don't leak memory */
 	destroy_radpcap_packet(packet);
 
