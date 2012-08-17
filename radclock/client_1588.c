@@ -78,6 +78,14 @@ void fill_rawdata_1588eq(struct radclock_handle *handle, vcounter_t vcount,
 #define NUMBER_OF_THE_BEAST 666
 #define BAIL_OUT			10 
 
+#ifdef HAVE_POSIX_TIMER
+timer_t client1588_timerid;
+#endif
+extern pthread_mutex_t alarm_mutex;
+extern pthread_cond_t alarm_cwait;
+
+
+
 /*
  * Build the stamp ID. Extract 6 bytes of original MAC address (remove
  * central 0xfffe) and OR the seq id. This makes a 64bit ID.
@@ -162,6 +170,7 @@ create_delay_req(struct radclock_handle *handle, uint8_t *buf, size_t *bytes,
 //	vcounter_t vcount;
 //	long double time;
 	struct timespec ts;
+	struct timeval tv;
 	struct ptp_stamp stamp, stamp2;
 	uint16_t port;
 
@@ -189,8 +198,13 @@ create_delay_req(struct radclock_handle *handle, uint8_t *buf, size_t *bytes,
 //	stamp.nsec = (uint32_t)(1e9 * (time - (uint64_t)time));
 
 	if (IEEE1588_CLIENT(handle)->last_update == 0) {
+#ifdef HAVE_CLOCK_GETTIME
 		clock_gettime(CLOCK_REALTIME, &ts);
 		stamp.sec = (uint64_t)ts.tv_sec;
+#else
+		gettimeofday(&tv, NULL);
+		stamp.sec = (uint64_t)tv.tv_sec;
+#endif
 		//stamp.nsec = (uint32_t)ts.tv_nsec;
 		stamp.nsec = 0;
 	}
@@ -226,6 +240,10 @@ ieee1588_client_init(struct radclock_handle *handle)
 	struct sockaddr_in addr;
 	struct ip_mreq imr;
 	const char *dev = handle->conf->network_device;
+
+	/* Signal catching */
+	struct sigaction sig_struct;
+	sigset_t alarm_mask;
 
 	/* Create the sockets */
 	sd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -336,6 +354,37 @@ ieee1588_client_init(struct radclock_handle *handle)
 	addr.sin_addr.s_addr = imr.imr_interface.s_addr;
 	IEEE1588_CLIENT(handle)->s_from = addr;
 	IEEE1588_CLIENT(handle)->seqid = 0;
+
+
+	/* Initialise the signal data */
+	sigemptyset(&alarm_mask);
+	sigaddset(&alarm_mask, SIGALRM);
+	sig_struct.sa_handler = catch_alarm; /* Not so dummy handler */
+	sig_struct.sa_mask = alarm_mask;
+	sig_struct.sa_flags = 0;
+	sigaction(SIGALRM, &sig_struct, NULL);
+
+	/* Initialize mutex and condition variable objects */
+	pthread_mutex_init(&alarm_mutex, NULL);
+	pthread_cond_init (&alarm_cwait, NULL);
+
+#ifdef HAVE_POSIX_TIMER
+	 /* CLOCK_REALTIME_HR does not exist on FreeBSD */
+	if (timer_create (CLOCK_REALTIME, NULL, &client1588_timerid) < 0) {
+		verbose(LOG_ERR, "client1588_init: POSIX timer create failed");
+		return (1);
+	}
+	if (set_ptimer(client1588_timerid, 0.5 /* !0 */,
+				(float) handle->conf->poll_period) < 0) {
+		verbose(LOG_ERR, "client1588_init: POSIX timer cannot be set");
+		return (1);
+	}
+#else
+	if (set_itimer(0.5 /* !0 */, (float) handle->conf->poll_period) < 0) {
+		verbose(LOG_ERR, "cilent1588_init: itimer cannot be set");
+		return (1);
+	}
+#endif
 
 	return (0);
 }
@@ -529,6 +578,22 @@ ieee1588_client(struct radclock_handle *handle)
 
 	JDEBUG
 
+
+	/* Timer will hiccup in the 1-2 ms range if reset */
+#ifdef HAVE_POSIX_TIMER
+	assess_ptimer(client1588_timerid, handle->conf->poll_period);
+#else
+	assess_itimer(adjusted_period);
+#endif
+
+	/* Sleep until next grid point. Try to do as less as possible in between
+	 * here and the actual sendto()
+	 */
+	pthread_mutex_lock(&alarm_mutex);
+	pthread_cond_wait(&alarm_cwait, &alarm_mutex);
+	pthread_mutex_unlock(&alarm_mutex);
+
+
 	/* Create a message to send */
 	memset(buf, 0, 54);
 	IEEE1588_CLIENT(handle)->seqid++;
@@ -576,9 +641,6 @@ ieee1588_client(struct radclock_handle *handle)
 			}
 		}
 	}
-
-	/* Wait and resend */
-	sleep(handle->conf->poll_period);
 
 	return (0);
 }
