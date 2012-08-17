@@ -117,8 +117,8 @@ typedef enum {
 
 
 struct unidir_stamp {
-	vcounter_t stamp;
-	/* Need some time information of some kind */
+	long double	remote_stamp;
+	vcounter_t local_stamp;
 };
 
 
@@ -132,16 +132,18 @@ struct bidir_stamp {
 
 // TODO this is very NTP centric
 struct stamp_t {
-	stamp_type_t type;
-	int qual_warning;	/* warning: route or server changes, server problem */
 	uint64_t id;
-	char server_ipaddr[INET6_ADDRSTRLEN];
+	uint64_t rank;
+	stamp_type_t type;
+	int msg_type;
+	int qual_warning;	/* warning: route or server changes, server problem */
 	int ttl;
 	int stratum;
 	int leapsec;
 	uint32_t refid;
 	double rootdelay;
 	double rootdispersion;
+	char server_ipaddr[INET6_ADDRSTRLEN];
 	union stamp_u {
 		struct unidir_stamp ustamp;
 		struct bidir_stamp  bstamp;
