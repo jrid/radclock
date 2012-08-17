@@ -30,7 +30,11 @@
 #include <sys/time.h>
 #endif
 
+#include <sys/types.h>
 #include <arpa/inet.h>
+#include <net/ethernet.h>
+#include <netinet/ip.h>
+#include <netinet/udp.h>
 
 #include <assert.h>
 #include <errno.h>
@@ -273,6 +277,99 @@ fill_rawdata_1588(u_char *c_handle, const struct pcap_pkthdr *pcap_hdr,
 	insert_rdb_in_list(handle->pcap_queue, rdb);
 }
 
+
+/*
+ * Push packets read from socket error queue into raw data queue. Useful to
+ * retrieve hardware timestamps on the sending side.
+ */
+#if !defined(__linux__)
+void
+fill_rawdata_1588eq(struct radclock_handle *handle, vcounter_t vcount,
+		struct timespec ts, unsigned char *ptp_msg, size_t pktlen)
+{
+}
+#else
+void
+fill_rawdata_1588eq(struct radclock_handle *handle, vcounter_t vcount,
+		struct timespec ts, unsigned char *ptp_msg, size_t pktlen)
+{
+	struct raw_data_bundle *rdb;
+	linux_sll_header_t *sllh;
+	struct iphdr *iph;
+	struct udphdr *udph;
+	unsigned char *p;
+	int datalen;
+	int err;
+
+	JDEBUG
+
+	/* Initialise raw data bundle */
+	rdb = (struct raw_data_bundle *) malloc(sizeof(struct raw_data_bundle));
+	JDEBUG_MEMORY(JDBG_MALLOC, rdb);
+	assert(rdb);
+
+	datalen = sizeof(linux_sll_header_t) + sizeof(struct iphdr) +
+			sizeof(struct udphdr) + pktlen;
+	RD_PKT(rdb)->buf = (void *) malloc(datalen * sizeof(char));
+	JDEBUG_MEMORY(JDBG_MALLOC, RD_PKT(rdb)->buf);
+	assert(RD_PKT(rdb)->buf);
+
+	/* Copy data of interest into the raw data bundle */
+	RD_PKT(rdb)->vcount = vcount;
+
+	/* Build completely fake PCAP header */
+	RD_PKT(rdb)->pcap_hdr.ts.tv_sec = ts.tv_sec;
+	RD_PKT(rdb)->pcap_hdr.ts.tv_usec = (long)(ts.tv_nsec / 1000);
+	RD_PKT(rdb)->pcap_hdr.len = datalen;
+	RD_PKT(rdb)->pcap_hdr.caplen = datalen;
+
+	/* Build entire packet data, SLL, IPv4, UDP */
+	sllh = (linux_sll_header_t *) RD_PKT(rdb)->buf;
+	iph  = (struct iphdr *)((uint8_t *)sllh + sizeof(linux_sll_header_t));
+	udph = (struct udphdr *)((uint8_t *)iph + sizeof(struct iphdr));
+	p    = (unsigned char *)((uint8_t *)udph + sizeof(struct udphdr));
+
+	/* IEEE 1588 */
+	memcpy(p, ptp_msg, pktlen);
+
+	/* UDP header */
+#if defined(__FreeBSD__) || defined (__APPLE__)
+	udph->uh_sport = htons(0);
+	udph->uh_dport = htons (319);
+#else
+	udph->source = htons(0);
+	udph->dest = htons (319);
+#endif
+	udph->check = 0;
+	udph->len = htons(sizeof(struct udphdr) + pktlen);
+
+	/* IP header */
+	iph->ihl = 5;
+	iph->version = 4;
+	iph->tos = 0x0;
+	iph->id = 0;
+	iph->frag_off = htons(0x4000);        /* DF */
+	iph->ttl = 64;
+	iph->protocol = 17;
+	iph->saddr = IEEE1588_CLIENT(handle)->s_from.sin_addr.s_addr;
+	iph->daddr = IEEE1588_CLIENT(handle)->s_to.sin_addr.s_addr;
+	iph->tot_len = htons(sizeof (struct iphdr) + sizeof(struct udphdr) + pktlen);
+	iph->check = 0;	// TODO: fix me
+
+	// TODO Recompute UDP checksum
+
+	/* SLL */
+	sllh->pkttype = htons(3);	/* LINUX_SLL_OTHERHOST */
+	sllh->hatype  = htons(1);	/* ARPHRD_ETHER : 10/100 Mbps Ethernet */
+	sllh->protocol = htons(ETHERTYPE_IP);
+
+	/* Insert the new bundle in the linked list */
+	rdb->next = NULL;
+	rdb->read = 0;
+	rdb->type = RD_TYPE_1588;
+	insert_rdb_in_list(handle->ieee1588eq_queue, rdb);
+}
+#endif
 
 int
 capture_raw_data(struct radclock_handle *handle)
