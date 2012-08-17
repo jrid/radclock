@@ -29,11 +29,11 @@
 #include "../config.h"
 
 // XXX so far, we only know how to do this on linux
-#ifndef WITH_RADKERNEL_LINUX
-int ieee1588_client_init(struct radclock_handle *handle) { return (1); }
-int ieee1588_client(struct radclock_handle *handle) { return(1); }
-
-#else	/* WITH_RADKERNEL_LINUX */
+//#ifndef WITH_RADKERNEL_LINUX
+//int ieee1588_client_init(struct radclock_handle *handle) { return (0); }
+//int ieee1588_client(struct radclock_handle *handle) { return(0); }
+//
+//#else	/* WITH_RADKERNEL_LINUX */
 
 #include <sys/ioctl.h>
 #include <sys/select.h>
@@ -45,16 +45,19 @@ int ieee1588_client(struct radclock_handle *handle) { return(1); }
 #include <net/if.h>
 
 // H/W timestamping specific
+#ifdef WITH_RADKERNEL_LINUX
 #include <asm/types.h>
 #include <linux/net_tstamp.h>
 #include <linux/errqueue.h>
 #include <linux/sockios.h>
+#endif
 
 #include <errno.h>
 #include <netdb.h>
 #include <pthread.h>
 #include <signal.h>
 #include <syslog.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -236,10 +239,12 @@ ieee1588_client_init(struct radclock_handle *handle)
 {
 	int sd, hwts_flag, err;
 	struct ifreq device, hwtstamp;
-	struct hwtstamp_config hwconfig;
 	struct sockaddr_in addr;
 	struct ip_mreq imr;
 	const char *dev = handle->conf->network_device;
+#ifdef WITH_RADKERNEL_LINUX
+	struct hwtstamp_config hwconfig;
+#endif
 
 	/* Signal catching */
 	struct sigaction sig_struct;
@@ -252,9 +257,21 @@ ieee1588_client_init(struct radclock_handle *handle)
 		return (1);
 	}
 
+#ifdef WITH_RADKERNEL_LINUX
 	/* Allow binding to a socket already bound */
-	setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, (int []){1}, sizeof(int));
+	err = setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, (int []){1}, sizeof(int));
+#else
+	/* Allow binding to a socket already bound */
+	err = setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, (int []){1}, sizeof(int));
+	if (err == -1)
+		perror("REUSEADDR");
+//	err = setsockopt(sd, SOL_SOCKET, SO_REUSEPORT, (int []){1}, sizeof(int));
+//	if (err == -1)
+//		perror("REUSEPORT");
+#endif
 
+
+#ifdef WITH_RADKERNEL_LINUX
 	/* Set the specified device as the interface to use */
 	setsockopt(sd, SOL_SOCKET, SO_BINDTODEVICE, dev, strlen(dev));
 
@@ -285,16 +302,20 @@ ieee1588_client_init(struct radclock_handle *handle)
 //		return (1);
 //		XXX if the device does not support this ioctl, normal to fail?
 	}
+#endif
 
 	/* Create the address data */
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(319);
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
+//	addr.sin_addr.s_addr = htonl(INADDR_ANY);
+//	addr.sin_addr.s_addr = htonl(inet_addr("10.0.3.5"));
+	addr.sin_addr.s_addr = htonl(IEEE1588_CLIENT(handle)->s_from.sin_addr.s_addr);
 
 	/* Bind */
 	err = bind(sd, (const struct sockaddr *)&addr, sizeof(addr));
 	if (err == -1) {
+		perror("Bind event socket");
 		verbose(LOG_ERR, "Binding to the event socket");
 		return (1);
 	}
@@ -327,6 +348,7 @@ ieee1588_client_init(struct radclock_handle *handle)
 		return (1);
 	}
 */
+#ifdef WITH_RADKERNEL_LINUX
 	/*
 	 * Set the socket timestamping flags for receiving both the raw hardware
 	 * timestamp and the hardware timestamp converted to system time.  We only
@@ -344,6 +366,7 @@ ieee1588_client_init(struct radclock_handle *handle)
 			return (1);
 		}
 	}
+#endif
 
 	/* Registre the socket in the radclock handle */
 	IEEE1588_CLIENT(handle)->clock_id = 0xBEEFCAFE0BADF00D;
@@ -396,6 +419,7 @@ ieee1588_client_init(struct radclock_handle *handle)
  * Much thanks to: http://linuxgazette.net/149/misc/melinte/ttools.c and
  * <kernel_source>/Documentation/networking/timestamping/timestamp.c
  */
+#ifdef WITH_RADKERNEL_LINUX
 static void
 exhaust_error_queue(struct radclock_handle *handle, uint8_t *clock_id,
 		unsigned char * ptp_msg, size_t msglen)
@@ -544,6 +568,7 @@ exhaust_error_queue(struct radclock_handle *handle, uint8_t *clock_id,
 		}
 	}
 }
+#endif
 
 static ssize_t
 recv_packet(struct radclock_handle *handle, uint8_t *clock_id,
@@ -558,8 +583,10 @@ recv_packet(struct radclock_handle *handle, uint8_t *clock_id,
     /* Recv the original data */
     bytes = recv(sd, &data, sizeof(data), MSG_DONTWAIT);
 
+#ifdef WITH_RADKERNEL_LINUX
     /* Exhaust data from the error queue */
     exhaust_error_queue(handle, clock_id, ptp_msg, msglen);
+#endif
 
     return (bytes);
 }
@@ -583,7 +610,7 @@ ieee1588_client(struct radclock_handle *handle)
 #ifdef HAVE_POSIX_TIMER
 	assess_ptimer(client1588_timerid, handle->conf->poll_period);
 #else
-	assess_itimer(adjusted_period);
+	assess_itimer(handle->conf->poll_period);
 #endif
 
 	/* Sleep until next grid point. Try to do as less as possible in between
@@ -645,4 +672,4 @@ ieee1588_client(struct radclock_handle *handle)
 	return (0);
 }
 
-#endif
+//#endif
